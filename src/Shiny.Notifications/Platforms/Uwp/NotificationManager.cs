@@ -1,12 +1,9 @@
 ﻿using System;
-using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Windows.UI.Notifications;
 using Microsoft.Toolkit.Uwp.Notifications;
 using Windows.ApplicationModel.Background;
-using Shiny.Jobs;
-using Shiny.Settings;
 using Shiny.Infrastructure;
 
 
@@ -14,23 +11,14 @@ namespace Shiny.Notifications
 {
     public class NotificationManager : INotificationManager, IPersistentNotificationManagerExtension
     {
-        readonly IServiceProvider services;
-        readonly IRepository repository;
-        readonly IJobManager jobs;
-        readonly ISettings settings;
+        readonly ShinyCoreServices services;
         readonly BadgeUpdater badgeUpdater;
 
 
-        public NotificationManager(IServiceProvider services,
-                                   IJobManager jobs,
-                                   ISettings settings,
-                                   IRepository repository)
+        public NotificationManager(ShinyCoreServices services)
         {
             this.badgeUpdater = BadgeUpdateManager.CreateBadgeUpdaterForApplication();
             this.services = services;
-            this.jobs = jobs;
-            this.settings = settings;
-            this.repository = repository;
         }
 
 
@@ -47,7 +35,7 @@ namespace Shiny.Notifications
 
 
         public Task<AccessState> RequestAccess()
-            => this.jobs.RequestAccess();
+            => this.services.Jobs.RequestAccess();
 
 
         public async Task Send(Notification notification)
@@ -55,7 +43,7 @@ namespace Shiny.Notifications
             var native = this.CreateNativeNotification(notification, false);
             if (notification.ScheduleDate != null)
             {
-                await this.repository.Set(notification.Id.ToString(), notification);
+                await this.services.Repository.Set(notification.Id.ToString(), notification);
                 return;
             }
 
@@ -63,7 +51,7 @@ namespace Shiny.Notifications
             if (notification.BadgeCount != null)
                 this.Badge = notification.BadgeCount.Value;
 
-            await this.services.SafeResolveAndExecute<INotificationDelegate>(x => x.OnReceived(notification));
+            await this.services.Services.SafeResolveAndExecute<INotificationDelegate>(x => x.OnReceived(notification));
         }
 
 
@@ -80,46 +68,43 @@ namespace Shiny.Notifications
         //}
 
 
-        readonly List<NotificationCategory> registeredCategories = new List<NotificationCategory>();
-        public void RegisterCategory(NotificationCategory category) => this.registeredCategories.Add(category);
-
-        public async Task<IEnumerable<Notification>> GetPending() => await this.repository.GetAll<Notification>();
+        public async Task<IEnumerable<Notification>> GetPending() => await this.services.Repository.GetAll<Notification>();
 
 
         public async Task Clear()
         {
             ToastNotificationManager.History.Clear();
-            await this.repository.Clear<Notification>();
+            await this.services.Repository.Clear<Notification>();
         }
 
 
         public async Task Cancel(int id)
         {
             ToastNotificationManager.History.Remove(id.ToString());
-            await this.repository.Remove<Notification>(id.ToString());
+            await this.services.Repository.Remove<Notification>(id.ToString());
         }
 
 
-        //public void Start()
-        //{
-        //    //if (this.services.IsRegistered<INotificationDelegate>())
-        //    //{
-        //    //    UwpShinyHost.RegisterBackground<NotificationBackgroundTaskProcessor>(
-        //    //        builder => builder.SetTrigger(new UserNotificationChangedTrigger(NotificationKinds.Toast))
-        //    //    );
-        //    //}
-        //}
+        public void Start()
+        {
+            if (this.services.Services.GetService(typeof(INotificationDelegate)) != null)
+            {
+                UwpPlatform.RegisterBackground<NotificationBackgroundTaskProcessor>(
+                    builder => builder.SetTrigger(new UserNotificationChangedTrigger(NotificationKinds.Toast))
+                );
+            }
+        }
 
 
         const string BADGE_KEY = "ShinyNotificationBadge";
         public int Badge
         {
-            get => this.settings.Get(BADGE_KEY, 0);
+            get => this.services.Settings.Get(BADGE_KEY, 0);
             set
             {
                 var badge = new BadgeNumericContent((uint)value);
                 this.badgeUpdater.Update(new BadgeNotification(badge.GetXml()));
-                this.settings.Set(BADGE_KEY, value);
+                this.services.Settings.Set(BADGE_KEY, value);
             }
         }
 
@@ -127,11 +112,11 @@ namespace Shiny.Notifications
         public ToastNotification CreateNativeNotification(Notification notification, bool includeProgressBar)
         {
             if (notification.Id == 0)
-                notification.Id = this.settings.IncrementValue("NotificationId");
+                notification.Id = this.services.Settings.IncrementValue("NotificationId");
 
             var toastContent = new ToastContent
             {
-                Duration = notification.Windows.UseLongDuration ? ToastDuration.Long : ToastDuration.Short,
+                //Duration = notification.Windows.UseLongDuration ? ToastDuration.Long : ToastDuration.Short,
                 //Launch = notification.Payload,
                 ActivationType = ToastActivationType.Background,
                 //ActivationType = ToastActivationType.Foreground,
@@ -161,44 +146,44 @@ namespace Shiny.Notifications
                     }
                 }
             };
-            if (!notification.Category.IsEmpty())
-            {
-                var category = this.registeredCategories.FirstOrDefault(x => x.Identifier.Equals(notification.Category));
+            //if (!notification.Category.IsEmpty())
+            //{
+            //    var category = this.registeredCategories.FirstOrDefault(x => x.Identifier.Equals(notification.Category));
 
-                var nativeActions = new ToastActionsCustom();
+            //    var nativeActions = new ToastActionsCustom();
 
-                foreach (var action in category.Actions)
-                {
-                    switch (action.ActionType)
-                    {
-                        case NotificationActionType.OpenApp:
-                            nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
-                            {
-                                //ActivationType = ToastActivationType.Foreground
-                                ActivationType = ToastActivationType.Background
-                            });
-                            break;
+            //    foreach (var action in category.Actions)
+            //    {
+            //        switch (action.ActionType)
+            //        {
+            //            case NotificationActionType.OpenApp:
+            //                nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
+            //                {
+            //                    //ActivationType = ToastActivationType.Foreground
+            //                    ActivationType = ToastActivationType.Background
+            //                });
+            //                break;
 
-                        case NotificationActionType.None:
-                        case NotificationActionType.Destructive:
-                            nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
-                            {
-                                ActivationType = ToastActivationType.Background
-                            });
-                            break;
+            //            case NotificationActionType.None:
+            //            case NotificationActionType.Destructive:
+            //                nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
+            //                {
+            //                    ActivationType = ToastActivationType.Background
+            //                });
+            //                break;
 
-                        case NotificationActionType.TextReply:
-                            nativeActions.Inputs.Add(new ToastTextBox(action.Identifier)
-                            {
-                                Title = notification.Title
-                                //DefaultInput = "",
-                                //PlaceholderContent = ""
-                            });
-                            break;
-                    }
-                }
-                toastContent.Actions = nativeActions;
-            }
+            //            case NotificationActionType.TextReply:
+            //                nativeActions.Inputs.Add(new ToastTextBox(action.Identifier)
+            //                {
+            //                    Title = notification.Title
+            //                    //DefaultInput = "",
+            //                    //PlaceholderContent = ""
+            //                });
+            //                break;
+            //        }
+            //    }
+            //    toastContent.Actions = nativeActions;
+            //}
 
             //if (!Notification.CustomSoundFilePath.IsEmpty())
             //    toastContent.Audio = new ToastAudio { Src = new Uri(Notification.CustomSoundFilePath) };
@@ -206,9 +191,19 @@ namespace Shiny.Notifications
             var native = new ToastNotification(toastContent.GetXml())
             {
                 Tag = notification.Id.ToString(),
-                Group = notification.Windows.GroupName
+                Group = notification.Channel
             };
             return native;
         }
+
+        public Task CreateChannel(Channel channel)
+            => this.services.Repository.SetChannel(channel);
+
+
+        public Task DeleteChannel(string identifier)
+            => this.services.Repository.DeleteChannel(identifier);
+
+        public Task<IList<Channel>> GetChannels()
+            => this.services.Repository.GetChannels();
     }
 }

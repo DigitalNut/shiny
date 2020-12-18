@@ -1,6 +1,5 @@
 ﻿using System;
 using Microsoft.Extensions.DependencyInjection;
-using Shiny.Notifications;
 using Shiny.Push;
 using Shiny.Push.OneSignal;
 
@@ -9,29 +8,20 @@ namespace Shiny
 {
     public static class ServiceCollectionExtensions
     {
-        public static bool UseOneSignalPush(this IServiceCollection services,
+        public static void UseOneSignalPush(this IServiceCollection services,
                                             Type delegateType,
-                                            OneSignalPushConfig config,
-                                            params NotificationCategory[] categories)
+                                            OneSignalPushConfig config)
         {
-#if NETSTANDARD2_0
-            return false;
-#else
             services.AddSingleton(typeof(IPushManager), typeof(Shiny.Push.OneSignal.PushManager));
             services.AddSingleton(typeof(IPushDelegate), delegateType);
-            return true;
-#endif
         }
 
 
-        public static bool UseOneSignalPush<TPushDelegate>(this IServiceCollection services,
-                                                           OneSignalPushConfig config,
-                                                           params NotificationCategory[] categories)
+        public static void UseOneSignalPush<TPushDelegate>(this IServiceCollection services, OneSignalPushConfig config)
             where TPushDelegate : class, IPushDelegate
             => services.UseOneSignalPush(
                 typeof(TPushDelegate),
-                config,
-                categories
+                config
             );
     }
 }

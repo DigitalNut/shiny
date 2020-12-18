@@ -11,6 +11,7 @@ on:
     branches: [ master, dev, preview ]
     paths:
     - "src/**"
+    - ".github/workflows/**"
   pull_request:
     branches: [ master, dev ]
     paths:
@@ -24,26 +25,26 @@ jobs:
     steps:
     - name: Add msbuild to PATH
       uses: microsoft/setup-msbuild@v1.0.2
-      with:
-        vs-version: '[16.7,16.8)'
+    #  with:
+    #    vs-version: '[16.7,16.8)'
     - uses: actions/checkout@v2
       with:
         submodules: true
+
     - name: Setup .NET Core
       uses: actions/setup-dotnet@v1
       with:
         dotnet-version: 3.1.301
+
     - name: Generate Build Number
       id: buildnumber
       uses: einaregilsson/build-number@v3
       with:
         token: ${{secrets.github_token}}
+
     - name: Build
       run: msbuild Build.sln /restore -m -property:Configuration=Release -property:BUILD_BUILDNUMBER=${{steps.buildnumber.outputs.build_number}} -property:BUILD_SOURCEBRANCHNAME=${{github.ref}}
-    #- name: Build
-    #  run: dotnet build Build.sln -property:Configuration=Release -property:BUILD_BUILDNUMBER=${{steps.buildnumber.outputs.build_number}} -property:BUILD_SOURCEBRANCHNAME=${{github.ref}}
-    # - name: Test
-    #  run: dotnet test Build.sln --no-build --verbosity normal
+
     - name: Post NuGet Artifacts
       uses: actions/upload-artifact@v2
       with:
@@ -51,4 +52,4 @@ jobs:
         path: '**/*.nupkg'
     - name: Publish to NuGet
       if: ${{ github.ref == 'refs/heads/preview' || github.ref == 'refs/heads/master' }}
-      run: dotnet nuget push **\*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{secrets.NUGETAPIKEY}}
+      run: dotnet nuget push **\*.nupkg --source https://api.nuget.org/v3/index.json --api-key ${{secrets.NUGETAPIKEY}} --skip-duplicate
