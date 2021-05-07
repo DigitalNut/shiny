@@ -11,25 +11,26 @@ namespace Shiny.Push
     {
         readonly Type pushManagerType;
         readonly Type delegateType;
+        readonly Channel[] channels;
 
 
-        public PushModule(Type pushManagerType, Type delegateType)
+        public PushModule(Type pushManagerType, Type delegateType, Channel[] channels)
         {
             this.pushManagerType = pushManagerType;
             this.delegateType = delegateType;
+            this.channels = channels;
         }
 
 
         public override void Register(IServiceCollection services)
         {
-#if __IOS__
-            services.TryAddSingleton<iOSNotificationDelegate>();
-            services.TryAddSingleton(sp => (IAppDelegatePushNotificationHandler)sp.Resolve<IPushManager>());
-
-#endif
-            services.UseNotifications<PushNotificationDelegate>(false);
-            services.TryAddSingleton(typeof(IPushManager), this.pushManagerType);
             services.AddSingleton(typeof(IPushDelegate), this.delegateType);
+            services.TryAddSingleton(typeof(IPushManager), this.pushManagerType);
+#if __IOS__ || WINDOWS_UWP
+            services.UseNotifications(null, null, this.channels);
+#elif __ANDROID__
+            services.UseNotifications<PushNotificationDelegate>(null, this.channels);
+#endif
         }
     }
 }

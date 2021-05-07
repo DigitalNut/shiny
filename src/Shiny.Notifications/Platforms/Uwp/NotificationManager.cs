@@ -1,15 +1,16 @@
 ﻿using System;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
-using Windows.UI.Notifications;
 using Microsoft.Toolkit.Uwp.Notifications;
+using Windows.UI.Notifications;
 using Windows.ApplicationModel.Background;
 using Shiny.Infrastructure;
 
 
 namespace Shiny.Notifications
 {
-    public class NotificationManager : INotificationManager, IPersistentNotificationManagerExtension
+    public class NotificationManager : INotificationManager, IShinyStartupTask
     {
         readonly ShinyCoreServices services;
         readonly BadgeUpdater badgeUpdater;
@@ -22,15 +23,15 @@ namespace Shiny.Notifications
         }
 
 
-        public IPersistentNotification Create(Notification notification)
+        public void Start()
         {
-            //AdaptiveProgressBarValue.Indeterminate;
-            var native = this.CreateNativeNotification(notification, true);
-            notification.ScheduleDate = null;
-            var pnotification = new UwpPersistentNotification(notification);
-            ToastNotificationManager.CreateToastNotifier().Show(native);
-
-            return pnotification;
+            if (this.services.Services.GetService(typeof(INotificationDelegate)) != null)
+            {
+                //ToastNotificationManagerCompat.OnActivated += null;
+                UwpPlatform.RegisterBackground<NotificationBackgroundTaskProcessor>(
+                    builder => builder.SetTrigger(new ToastNotificationActionTrigger())
+                );
+            }
         }
 
 
@@ -40,18 +41,118 @@ namespace Shiny.Notifications
 
         public async Task Send(Notification notification)
         {
-            var native = this.CreateNativeNotification(notification, false);
+            // create the notification to validate it
+            if (notification.Id == 0)
+                notification.Id = this.services.Settings.IncrementValue("NotificationId");
+
+            var builder = new ToastContentBuilder()
+                .AddText(notification.Title, AdaptiveTextStyle.Title)
+                .AddText(notification.Message, AdaptiveTextStyle.Subtitle)
+                .SetToastDuration(ToastDuration.Short)
+                .AddToastActivationInfo(notification.Id.ToString(), ToastActivationType.Foreground);
+            await this.TrySetChannel(notification, builder);
+
             if (notification.ScheduleDate != null)
             {
                 await this.services.Repository.Set(notification.Id.ToString(), notification);
-                return;
+                // TODO: set badge and fire notification fired?
+                builder.Schedule(notification.ScheduleDate.Value);
             }
+            else
+            {
+                if (notification.BadgeCount != null)
+                    this.Badge = notification.BadgeCount.Value;
 
-            ToastNotificationManager.CreateToastNotifier().Show(native);
-            if (notification.BadgeCount != null)
-                this.Badge = notification.BadgeCount.Value;
+                builder.Show(new CustomizeToast(x =>
+                {
+                    //x.Activated += null;
+                    //x.Dismissed += null;
+                    x.Tag = notification.Id.ToString();
+                    x.Group = "";
+                    //x.Priority
+                }));
+            }
+        }
 
-            await this.services.Services.SafeResolveAndExecute<INotificationDelegate>(x => x.OnReceived(notification));
+
+        public async Task<IEnumerable<Notification>> GetPending()
+            => await this.services.Repository.GetAll<Notification>();
+
+
+        public async Task Clear()
+        {
+            ToastNotificationManagerCompat.History.Clear();
+            await this.services.Repository.Clear<Notification>();
+        }
+
+
+        public async Task Cancel(int id)
+        {
+            ToastNotificationManagerCompat.History.Remove(id.ToString());
+            await this.services.Repository.Remove<Notification>(id.ToString());
+        }
+
+
+        const string BADGE_KEY = "ShinyNotificationBadge";
+        public int Badge
+        {
+            get => this.services.Settings.Get<int>(BADGE_KEY);
+            set
+            {
+                var badge = new BadgeNumericContent((uint)value);
+                this.badgeUpdater.Update(new BadgeNotification(badge.GetXml()));
+                this.services.Settings.Set(BADGE_KEY, value);
+            }
+        }
+
+
+        public Task<IList<Channel>> GetChannels() => this.services.Repository.GetChannels();
+        public Task AddChannel(Channel channel) => this.services.Repository.SetChannel(channel);
+        public Task RemoveChannel(string channelId) => this.services.Repository.RemoveChannel(channelId);
+        public Task ClearChannels() => this.services.Repository.RemoveAllChannels();
+
+
+        protected async Task TrySetChannel(Notification notification, ToastContentBuilder builder)
+        {
+            Channel? channel = null;
+            if (!notification.Channel.IsEmpty())
+                channel = await this.services.Repository.GetChannel(notification.Channel);
+
+            channel ??= Channel.Default;
+
+            //if (!channel.CustomSoundPath.IsEmpty())
+            //    builder.AddAudio(new Uri(channel.CustomSoundPath));
+
+            if (channel.Actions.Any())
+            {
+                foreach (var action in channel.Actions)
+                {
+                    switch (action.ActionType)
+                    {
+                        case ChannelActionType.OpenApp:
+                            // foreground activation
+                            builder.AddButton(new ToastButton()
+                                .SetContent(action.Title)
+                                .AddArgument("action", action.Identifier)
+                            );
+                            break;
+
+                        case ChannelActionType.None:
+                        case ChannelActionType.Destructive:
+                            builder.AddButton(new ToastButton()
+                                .SetBackgroundActivation()
+                                .SetContent(action.Title)
+                                .AddArgument("action", action.Identifier)
+                            );
+                            break;
+
+                        case ChannelActionType.TextReply:
+                            builder.AddInputTextBox(action.Identifier, null, action.Title);
+                            // TODO: need  button?
+                            break;
+                    }
+                }
+            }
         }
 
 
@@ -66,144 +167,5 @@ namespace Shiny.Notifications
 
         //    return sound;
         //}
-
-
-        public async Task<IEnumerable<Notification>> GetPending() => await this.services.Repository.GetAll<Notification>();
-
-
-        public async Task Clear()
-        {
-            ToastNotificationManager.History.Clear();
-            await this.services.Repository.Clear<Notification>();
-        }
-
-
-        public async Task Cancel(int id)
-        {
-            ToastNotificationManager.History.Remove(id.ToString());
-            await this.services.Repository.Remove<Notification>(id.ToString());
-        }
-
-
-        public void Start()
-        {
-            if (this.services.Services.GetService(typeof(INotificationDelegate)) != null)
-            {
-                UwpPlatform.RegisterBackground<NotificationBackgroundTaskProcessor>(
-                    builder => builder.SetTrigger(new UserNotificationChangedTrigger(NotificationKinds.Toast))
-                );
-            }
-        }
-
-
-        const string BADGE_KEY = "ShinyNotificationBadge";
-        public int Badge
-        {
-            get => this.services.Settings.Get(BADGE_KEY, 0);
-            set
-            {
-                var badge = new BadgeNumericContent((uint)value);
-                this.badgeUpdater.Update(new BadgeNotification(badge.GetXml()));
-                this.services.Settings.Set(BADGE_KEY, value);
-            }
-        }
-
-
-        public ToastNotification CreateNativeNotification(Notification notification, bool includeProgressBar)
-        {
-            if (notification.Id == 0)
-                notification.Id = this.services.Settings.IncrementValue("NotificationId");
-
-            var toastContent = new ToastContent
-            {
-                //Duration = notification.Windows.UseLongDuration ? ToastDuration.Long : ToastDuration.Short,
-                //Launch = notification.Payload,
-                ActivationType = ToastActivationType.Background,
-                //ActivationType = ToastActivationType.Foreground,
-                Visual = new ToastVisual
-                {
-                    BindingGeneric = new ToastBindingGeneric
-                    {
-                        Children =
-                        {
-                            new AdaptiveText
-                            {
-                                Text = notification.Title
-                            },
-                            new AdaptiveText
-                            {
-                                Text = notification.Message
-                            }
-
-                            //new AdaptiveProgressBar()
-                            //{
-                            //    Title = "Weekly playlist",
-                            //    Value = new BindableProgressBarValue("progressValue"),
-                            //    ValueStringOverride = new BindableString("progressValueString"),
-                            //    Status = new BindableString("progressStatus")
-                            //}
-                        }
-                    }
-                }
-            };
-            //if (!notification.Category.IsEmpty())
-            //{
-            //    var category = this.registeredCategories.FirstOrDefault(x => x.Identifier.Equals(notification.Category));
-
-            //    var nativeActions = new ToastActionsCustom();
-
-            //    foreach (var action in category.Actions)
-            //    {
-            //        switch (action.ActionType)
-            //        {
-            //            case NotificationActionType.OpenApp:
-            //                nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
-            //                {
-            //                    //ActivationType = ToastActivationType.Foreground
-            //                    ActivationType = ToastActivationType.Background
-            //                });
-            //                break;
-
-            //            case NotificationActionType.None:
-            //            case NotificationActionType.Destructive:
-            //                nativeActions.Buttons.Add(new ToastButton(action.Title, action.Identifier)
-            //                {
-            //                    ActivationType = ToastActivationType.Background
-            //                });
-            //                break;
-
-            //            case NotificationActionType.TextReply:
-            //                nativeActions.Inputs.Add(new ToastTextBox(action.Identifier)
-            //                {
-            //                    Title = notification.Title
-            //                    //DefaultInput = "",
-            //                    //PlaceholderContent = ""
-            //                });
-            //                break;
-            //        }
-            //    }
-            //    toastContent.Actions = nativeActions;
-            //}
-
-            //if (!Notification.CustomSoundFilePath.IsEmpty())
-            //    toastContent.Audio = new ToastAudio { Src = new Uri(Notification.CustomSoundFilePath) };
-
-            var native = new ToastNotification(toastContent.GetXml())
-            {
-                Tag = notification.Id.ToString(),
-                Group = notification.Channel
-            };
-            return native;
-        }
-
-        public Task CreateChannel(Channel channel)
-            => this.services.Repository.SetChannel(channel);
-
-
-        public Task DeleteChannel(string identifier)
-            => this.services.Repository.DeleteChannel(identifier);
-
-        public Task<IList<Channel>> GetChannels()
-            => this.services.Repository.GetChannels();
     }
 }

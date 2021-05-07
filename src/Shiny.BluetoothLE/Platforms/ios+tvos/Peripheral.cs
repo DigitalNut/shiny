@@ -1,10 +1,10 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Reactive.Linq;
 using System.Reactive.Disposables;
 using CoreBluetooth;
 using Foundation;
-using Shiny.Logging;
 using Shiny.BluetoothLE.Internals;
 
 
@@ -12,11 +12,17 @@ namespace Shiny.BluetoothLE
 {
     public class Peripheral : AbstractPeripheral
     {
-        readonly CentralContext context;
-        IDisposable autoReconnectSub;
+        readonly ManagerContext context;
+        IDisposable? autoReconnectSub;
 
 
-        public Peripheral(CentralContext context, CBPeripheral native) : base(native.Name, native.Identifier.ToString())
+        public Peripheral(
+            ManagerContext context,
+            CBPeripheral native
+        ) : base(
+            native.Name,
+            native.Identifier.ToString()
+        )
         {
             this.context = context;
             this.Native = native;
@@ -110,36 +116,47 @@ namespace Shiny.BluetoothLE
         });
 
 
-        public override IObservable<IGattService> GetKnownService(string serviceUuid)
-            => Observable.Create<IGattService>(ob =>
+        public override IObservable<IGattService?> GetKnownService(string serviceUuid, bool throwIfNotFound = false)
+            => Observable.Create<IGattService?>(ob =>
             {
+                var nativeUuid = CBUUID.FromString(serviceUuid);
+                var service = this.TryGetService(nativeUuid);
+                if (service != null)
+                {
+                    ob.Respond(service);
+                    return Disposable.Empty;
+                }
                 var handler = new EventHandler<NSErrorEventArgs>((sender, args) =>
                 {
                     if (this.Native.Services == null)
                         return;
 
-                    foreach (var native in this.Native.Services)
-                    {
-                        var service = new GattService(this, native);
-                        // do we really need to compare strings here, when DiscoverServices should
-                        //  only return the one service (if found)
-                        if (service.Uuid.Equals(serviceUuid, StringComparison.InvariantCultureIgnoreCase))
-                        {
-                            ob.Respond(service);
-                            break;
-                        }
-                    }
+                    var service = this.TryGetService(nativeUuid);
+                    ob.Respond(service);
                 });
+
                 this.Native.DiscoveredService += handler;
-                this.Native.DiscoverServices(new[] { CBUUID.FromString(serviceUuid) });
+                this.Native.DiscoverServices(new [] { nativeUuid });
 
-                return () => this.Native.DiscoveredService -= handler;
-            });
+                return Disposable.Create(() => this.Native.DiscoveredService -= handler);
+            })
+            .Assert(serviceUuid, throwIfNotFound);
 
 
-        public override IObservable<IGattService> DiscoverServices() => Observable.Create<IGattService>(ob =>
+        IGattService? TryGetService(CBUUID nativeUuid)
         {
-            Log.Write("BluetoothLe-Device", "service discovery hooked for peripheral " + this.Uuid);
+            var services = this.Native.Services?.ToList() ?? new List<CBService>(0);
+            var service = services.FirstOrDefault(x => x.UUID.Equals(nativeUuid));
+
+            if (service == null)
+                return null;
+
+            return new GattService(this, service);
+        }
+
+
+        public override IObservable<IList<IGattService>> GetServices() => Observable.Create<IList<IGattService>>(ob =>
+        {
             var services = new Dictionary<string, IGattService>();
 
             var handler = new EventHandler<NSErrorEventArgs>((sender, args) =>
@@ -149,20 +166,16 @@ namespace Shiny.BluetoothLE
                     ob.OnError(new BleException(args.Error.LocalizedDescription));
                     return;
                 }
-
-                if (this.Native.Services == null)
-                    return;
-
-                foreach (var native in this.Native.Services)
+                else if (this.Native.Services != null)
                 {
-                    var service = new GattService(this, native);
-                    if (!services.ContainsKey(service.Uuid))
-                    {
-                        services.Add(service.Uuid, service);
-                        ob.OnNext(service);
-                    }
+                    var list = this.Native
+                        .Services
+                        .Select(native => new GattService(this, native))
+                        .Cast<IGattService>()
+                        .ToList();
+
+                    ob.Respond(list);
                 }
-                ob.OnCompleted();
             });
             this.Native.DiscoveredService += handler;
             this.Native.DiscoverServices();

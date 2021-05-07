@@ -5,11 +5,12 @@ using System.Reactive.Linq;
 using System.Threading.Tasks;
 using CoreLocation;
 using Shiny.Infrastructure;
+using Shiny.Locations;
 
 
 namespace Shiny.Beacons
 {
-    public class BeaconMonitoringManager : IBeaconMonitoringManager
+    public partial class BeaconMonitoringManager : IBeaconMonitoringManager
     {
         readonly IRepository repository;
         readonly CLLocationManager manager;

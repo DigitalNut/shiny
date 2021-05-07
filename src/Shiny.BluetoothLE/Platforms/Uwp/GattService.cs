@@ -1,63 +1,57 @@
 ﻿using System;
 using System.Linq;
-using System.Reactive.Disposables;
 using System.Reactive.Linq;
+using System.Collections.Generic;
+using Shiny.BluetoothLE.Internals;
 using Windows.Devices.Bluetooth;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Native = Windows.Devices.Bluetooth.GenericAttributeProfile.GattDeviceService;
-using Shiny.BluetoothLE.Internals;
 
 
 namespace Shiny.BluetoothLE
 {
     public class GattService : AbstractGattService
     {
-        readonly DeviceContext context;
+        readonly PeripheralContext context;
         readonly Native native;
 
 
-        public GattService(DeviceContext context, Native native) : base(context.Peripheral, native.Uuid.ToString(), false)
+        public GattService(PeripheralContext context, Native native) : base(context.Peripheral, native.Uuid.ToString(), false)
         {
             this.context = context;
             this.native = native;
         }
 
 
-        public override IObservable<IGattCharacteristic> GetKnownCharacteristics(params string[] characteristicIds)
-            => Observable.Create<IGattCharacteristic>(async ob =>
+        public override IObservable<IGattCharacteristic?> GetKnownCharacteristic(string characteristicUuid, bool throwIfNotFound = false) =>
+            Observable.FromAsync(async () =>
             {
-                var found = false;
+                var result = await this.native.GetCharacteristicsForUuidAsync(
+                    Guid.Parse(characteristicUuid),
+                    BluetoothCacheMode.Cached
+                );
+                if (result.Status != GattCommunicationStatus.Success)
+                    throw new ArgumentException("GATT Communication failure - " + result.Status);
 
-                foreach (var uuid in characteristicIds)
-                {
-                    var result = await this.native.GetCharacteristicsForUuidAsync(Guid.Parse(uuid), BluetoothCacheMode.Cached);
-                    if (result.Status == GattCommunicationStatus.Success)
-                    {
-                        found = true;
-                        var ch = new GattCharacteristic(this.context, result.Characteristics.First(), this);
-                        ob.OnNext(ch);
-                    }
-                }
-                // prevent NRE on observable
-                if (!found)
-                    ob.OnNext(null);
-
-                ob.OnCompleted();
-
-                return Disposable.Empty;
-            });
+                var ch = new GattCharacteristic(this.context, result.Characteristics.First(), this);
+                return ch;
+            })
+            .Assert(this.Uuid, characteristicUuid, throwIfNotFound);
 
 
-        public override IObservable<IGattCharacteristic> DiscoverCharacteristics() => Observable.Create<IGattCharacteristic>(async ob =>
+        public override IObservable<IList<IGattCharacteristic>> GetCharacteristics() => Observable.FromAsync(async ct =>
         {
-            var result = await this.native.GetCharacteristicsAsync(BluetoothCacheMode.Uncached);
-            foreach (var characteristic in result.Characteristics)
-            {
-                var wrap = new GattCharacteristic(this.context, characteristic, this);
-                ob.OnNext(wrap);
-            }
+            var result = await this.native
+                .GetCharacteristicsAsync(BluetoothCacheMode.Uncached)
+                .AsTask(ct)
+                .ConfigureAwait(false);
 
-            ob.OnCompleted();
+            result.Status.Assert();
+            return result
+                .Characteristics
+                .Select(x => new GattCharacteristic(this.context, x, this))
+                .Cast<IGattCharacteristic>()
+                .ToList();
         });
     }
 }

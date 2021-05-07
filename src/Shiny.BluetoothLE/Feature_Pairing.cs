@@ -2,9 +2,10 @@
 using System.Collections.Generic;
 using System.Reactive.Linq;
 
+
 namespace Shiny.BluetoothLE
 {
-    public interface ICanSeePairedPeripherals
+    public interface ICanSeePairedPeripherals : IBleManager
     {
         /// <summary>
         /// Get the list of paired peripherals

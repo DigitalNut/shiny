@@ -2,19 +2,38 @@
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics.Contracts;
+using System.IO;
 using System.Linq;
+using System.Reflection;
 
 
 namespace Shiny
 {
-    public static class GeneralExtensions
+    public static partial class Extensions
     {
+        public static string ResourceToFilePath(this IPlatform platform, Assembly assembly, string resourceName)
+        {
+            var path = Path.Combine(platform.AppData.FullName, resourceName);
+            if (!File.Exists(path))
+            {
+                using (var stream = assembly.GetManifestResourceStream(resourceName))
+                {
+                    using (var fs = File.Create(path))
+                    {
+                        stream.CopyTo(fs);
+                    }
+                }
+            }
+            return path;
+        }
+
+
         /// <summary>
         /// Extension method to String.IsNullOrWhiteSpace
         /// </summary>
         /// <param name="s"></param>
         /// <returns></returns>
-        public static bool IsEmpty(this string s) => String.IsNullOrWhiteSpace(s);
+        public static bool IsEmpty(this string? s) => String.IsNullOrWhiteSpace(s);
 
 
         /// <summary>
@@ -23,7 +42,7 @@ namespace Shiny
         /// <param name="string"></param>
         /// <param name="length"></param>
         /// <returns></returns>
-        public static bool HasMinLength(this string @string, int length)
+        public static bool HasMinLength(this string? @string, int length)
         {
             if (@string.IsEmpty())
                 return false;

@@ -63,30 +63,35 @@ namespace Shiny.BluetoothLE.Hosting
         }
 
 
-        public Task StartAdvertising(AdvertisementData? adData = null)
+        public async Task StartAdvertising(AdvertisementOptions? options = null)
         {
             if (!this.context.Context.IsMinApiLevel(23))
                 throw new ApplicationException("BLE Advertiser needs API Level 23+");
 
-            this.adCallbacks = new AdvertisementCallbacks();
+            options ??= new AdvertisementOptions();
+            var tcs = new TaskCompletionSource<object>();
+            this.adCallbacks = new AdvertisementCallbacks(
+                () => tcs.SetResult(null),
+                ex => tcs.SetException(ex)
+            );
 
             var settings = new AdvertiseSettings.Builder()
                 .SetAdvertiseMode(AdvertiseMode.Balanced)
-                .SetConnectable(true); // TODO: configurable
+                .SetConnectable(true);
 
             var data = new AdvertiseData.Builder()
-                .SetIncludeDeviceName(true) // TODO: configurable
-                .SetIncludeTxPowerLevel(true); // TODO: configurable
+                .SetIncludeDeviceName(options.AndroidIncludeDeviceName)
+                .SetIncludeTxPowerLevel(options.AndroidIncludeTxPower);
 
-            if (adData != null)
-            {
-                if (adData.ManufacturerData != null)
-                    data.AddManufacturerData(adData.ManufacturerData.CompanyId, adData.ManufacturerData.Data);
+            if (options.ManufacturerData != null)
+                data.AddManufacturerData(options.ManufacturerData.CompanyId, options.ManufacturerData.Data);
 
-                if (adData.ServiceUuids != null)
-                    foreach (var serviceUuid in adData.ServiceUuids)
-                        data.AddServiceUuid(new Android.OS.ParcelUuid(UUID.FromString(serviceUuid)));
-            }
+            var serviceUuids = options.UseGattServiceUuids
+                ? this.services.Keys.ToList()
+                : options.ServiceUuids;
+
+            foreach (var uuid in serviceUuids)
+                data.AddServiceUuid(new Android.OS.ParcelUuid(UUID.FromString(uuid)));
 
             this.context
                 .Manager
@@ -98,7 +103,7 @@ namespace Shiny.BluetoothLE.Hosting
                     this.adCallbacks
                 );
 
-            return Task.CompletedTask;
+            await tcs.Task;
         }
 
 

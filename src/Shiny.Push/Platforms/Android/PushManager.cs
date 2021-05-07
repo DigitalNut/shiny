@@ -1,61 +1,76 @@
 ﻿using System;
+using System.Linq;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Reactive.Linq;
+using System.Reactive.Subjects;
+using Android.Runtime;
 using Android.Gms.Extensions;
 using Firebase.Iid;
 using Firebase.Messaging;
+using Shiny.Notifications;
+using Shiny.Infrastructure;
 using Task = System.Threading.Tasks.Task;
 using CancellationToken = System.Threading.CancellationToken;
-using Shiny.Settings;
-using Shiny.Notifications;
 
 
 namespace Shiny.Push
 {
-    public class PushManager : AbstractPushManager, IPushTagSupport, IAndroidTokenUpdate
+    public class PushManager : AbstractPushManager,
+                               IPushTagSupport,
+                               IShinyStartupTask
     {
-        readonly IAndroidContext context;
-        readonly INotificationManager notifications;
-        readonly IMessageBus bus;
+        readonly Subject<PushNotification> receiveSubj;
+        readonly INotificationManager notificationManager;
 
 
-        public PushManager(IAndroidContext context,
-                           INotificationManager notifications,
-                           ISettings settings,
-                           IMessageBus bus) : base(settings)
+        public PushManager(ShinyCoreServices services, INotificationManager notificationManager) : base(services)
         {
-            this.context = context;
-            this.notifications = notifications;
-            this.bus = bus;
+            this.notificationManager = notificationManager;
+            this.receiveSubj = new Subject<PushNotification>();
+        }
+
+
+        public virtual void Start()
+        {
+            // wireup firebase if it was active
+            if (this.CurrentRegistrationToken != null)
+                FirebaseMessaging.Instance.AutoInitEnabled = true;
+
+            ShinyFirebaseService.NewToken = async token =>
+            {
+                if (this.CurrentRegistrationToken != null)
+                {
+                    this.CurrentRegistrationToken = token;
+                    this.CurrentRegistrationTokenDate = DateTime.UtcNow;
+
+                    await this.Services.Services.RunDelegates<IPushDelegate>(
+                        x => x.OnTokenChanged(token)
+                    );
+                }
+            };
+
+            ShinyFirebaseService.MessageReceived = async message =>
+            {
+                var pr = this.FromNative(message);
+                await this.OnPushReceived(pr);
+            };
         }
 
 
         public override async Task<PushAccessState> RequestAccess(CancellationToken cancelToken = default)
         {
-            //var resultCode = GoogleApiAvailability
-            //    .Instance
-            //    .IsGooglePlayServicesAvailable(this.context.AppContext);
-
-            //if (resultCode == ConnectionResult.)
-            //if (resultCode != ConnectionResult.ServiceMissing)
-            //{
-            ////{
-            ////    if (GoogleApiAvailability.Instance.IsUserResolvableError(resultCode))
-            ////        msgText.Text = GoogleApiAvailability.Instance.GetErrorString(resultCode);
-            //}
-            var nresult = await this.notifications.RequestAccess();
+            var nresult = await this.notificationManager.RequestAccess();
             if (nresult != AccessState.Available)
                 return new PushAccessState(nresult, null);
 
-            var result = await FirebaseInstanceId
-                .Instance
-                .GetInstanceId()
-                .AsAsync<IInstanceIdResult>();
-
-            this.CurrentRegistrationToken = result.Token;
-            this.CurrentRegistrationTokenDate = DateTime.UtcNow;
             FirebaseMessaging.Instance.AutoInitEnabled = true;
+
+            var task = await FirebaseMessaging.Instance.GetToken();
+            var token = task.JavaCast<Java.Lang.String>().ToString();
+
+            this.CurrentRegistrationToken = token;
+            this.CurrentRegistrationTokenDate = DateTime.UtcNow;
 
             return new PushAccessState(AccessState.Available, this.CurrentRegistrationToken);
         }
@@ -63,44 +78,92 @@ namespace Shiny.Push
 
         public override async Task UnRegister()
         {
-            this.ClearRegistration();
-            FirebaseMessaging.Instance.AutoInitEnabled = false;
+            if (this.CurrentRegistrationToken == null)
+                return;
 
-            // must be executed off proc
+            this.ClearRegistration();
+
+            FirebaseMessaging.Instance.AutoInitEnabled = false;
             await Task.Run(() => FirebaseInstanceId.Instance.DeleteInstanceId());
         }
 
 
-        public override IObservable<IDictionary<string, string>> WhenReceived()
-            => this.bus.Listener<IDictionary<string, string>>(nameof(ShinyFirebaseService));
+        public override IObservable<PushNotification> WhenReceived()
+            => this.receiveSubj;
 
 
-        public virtual async Task SetTags(params string[] tags)
+        public virtual async Task AddTag(string tag)
         {
-            if (this.RegisteredTags != null)
-            {
-                foreach (var tag in this.RegisteredTags)
-                {
-                    await FirebaseMessaging.Instance.UnsubscribeFromTopic(tag);
-                }
-            }
-            if (tags != null)
-            {
-                foreach (var tag in tags)
-                {
-                    await FirebaseMessaging.Instance.SubscribeToTopic(tag);
-                }
-            }
-            this.RegisteredTags = tags;
+            var tags = this.RegisteredTags?.ToList() ?? new List<string>(1);
+            tags.Add(tag);
+
+            await FirebaseMessaging.Instance.SubscribeToTopic(tag);
+            this.RegisteredTags = tags.ToArray();
         }
 
 
-        public virtual Task UpdateNativePushToken(string token)
+        public virtual async Task RemoveTag(string tag)
         {
-            this.CurrentRegistrationToken = token;
-            this.CurrentRegistrationTokenDate = DateTime.UtcNow;
+            var list = this.RegisteredTags?.ToList() ?? new List<string>(0);
+            if (list.Remove(tag))
+                this.RegisteredTags = list.ToArray();
 
-            return Task.CompletedTask;
+            await FirebaseMessaging.Instance.UnsubscribeFromTopic(tag);
+        }
+
+
+        public virtual async Task ClearTags()
+        {
+            if (this.RegisteredTags != null)
+                foreach (var tag in this.RegisteredTags)
+                    await FirebaseMessaging.Instance.UnsubscribeFromTopic(tag);
+
+            this.RegisteredTags = null;
+        }
+
+
+        public virtual async Task SetTags(params string[]? tags)
+        {
+            await this.ClearTags();
+            if (tags != null)
+                foreach (var tag in tags)
+                    await this.AddTag(tag);
+        }
+
+
+        protected virtual async Task OnPushReceived(PushNotification push)
+        {
+            this.receiveSubj.OnNext(push);
+
+            await this.Services.Services.RunDelegates<IPushDelegate>(
+                x => x.OnReceived(push)
+            );
+
+            if (push.Notification != null)
+                await this.notificationManager.Send(push.Notification);
+        }
+
+
+        protected virtual PushNotification FromNative(RemoteMessage message)
+        {
+            Notification? notification = null;
+            var native = message.GetNotification();
+
+            if (native != null)
+            {
+                notification = new Notification
+                {
+                    Title = native.Title,
+                    Message = native.Body,
+                    Channel = native.ChannelId
+                };
+                if (!native.Icon.IsEmpty())
+                    notification.Android.SmallIconResourceName = native.Icon;
+
+                if (!native.Color.IsEmpty())
+                    notification.Android.ColorResourceName = native.Color;
+            }
+            return new PushNotification(message.Data, notification);
         }
     }
 }

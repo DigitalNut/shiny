@@ -13,6 +13,8 @@ namespace Shiny
         PackageInfo Package { get; }
         IObservable<ActivityChanged> WhenActivityChanged();
         void OnNewIntent(Intent intent);
+        void OnActivityResult(int requestCode, Result resultCode, Intent data);
+
 
         Intent CreateIntent<T>(params string[] actions);
         AccessState GetCurrentAccessState(string androidPermission);
@@ -22,11 +24,14 @@ namespace Shiny
         bool IsInManifest(string androidPermission);
         bool IsMinApiLevel(int apiLevel);
         void OnRequestPermissionsResult(int requestCode, string[] permissions, Permission[] grantResult);
-        IObservable<AccessState> RequestAccess(params string[] androidPermissions);
-        void StartService(Type serviceType, bool foreground);
+
+        IObservable<PermissionRequestResult> RequestPermissions(params string[] androidPermissions);
+        IObservable<AccessState> RequestAccess(string androidPermission);
+        void StartService(Type serviceType);
         void StopService(Type serviceType);
         IObservable<ActivityChanged> WhenActivityStatusChanged();
         IObservable<Intent> WhenIntentReceived();
         IObservable<Intent> WhenIntentReceived(string intentAction);
+        IObservable<(Result result, Intent data)> RequestActivityResult(Action<int, Activity> request);
     }
 }

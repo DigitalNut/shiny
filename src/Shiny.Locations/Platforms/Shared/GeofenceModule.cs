@@ -2,7 +2,6 @@
 using System;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
-using Shiny.Logging;
 #if __ANDROID__
 using Android.App;
 using Android.Gms.Common;
@@ -14,14 +13,7 @@ namespace Shiny.Locations
     class GeofenceModule : ShinyModule
     {
         readonly Type delegateType;
-        readonly bool requestPermissionOnStart;
-
-
-        public GeofenceModule(Type delegateType, bool requestPermissionOnStart)
-        {
-            this.delegateType = delegateType;
-            this.requestPermissionOnStart = requestPermissionOnStart;
-        }
+        public GeofenceModule(Type delegateType) => this.delegateType = delegateType;
 
 
         public override void Register(IServiceCollection services)
@@ -37,7 +29,6 @@ namespace Shiny.Locations
             }
             else
             {
-                services.TryAddSingleton<GeofenceProcessor>();
                 services.TryAddSingleton(typeof(IGeofenceDelegate), this.delegateType);
                 services.TryAddSingleton<IGeofenceManager, GeofenceManagerImpl>();
             }
@@ -50,26 +41,6 @@ namespace Shiny.Locations
 #endif
             // always add the delegate
             services.AddSingleton(typeof(IGeofenceDelegate), this.delegateType);
-        }
-
-
-        public override async void OnContainerReady(IServiceProvider services)
-        {
-            base.OnContainerReady(services);
-            if (!this.requestPermissionOnStart)
-                return;
-
-            try
-            {
-                var mgr = services.GetService<IGeofenceManager>();
-                var access = await mgr.RequestAccess();
-                if (access != AccessState.Available)
-                    Log.Write("Geofence", "Permission Denied on startup");
-            }
-            catch (Exception ex)
-            {
-                Log.Write(ex);
-            }
         }
     }
 }

@@ -1,43 +1,54 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Firebase.CloudMessaging;
 using Firebase.InstanceID;
-using Shiny.Notifications;
-using Shiny.Settings;
+using Shiny.Infrastructure;
 
 
 namespace Shiny.Push.FirebaseMessaging
 {
     public class PushManager : Shiny.Push.PushManager, IPushTagSupport
     {
-        public PushManager(ISettings settings, IServiceProvider services, iOSNotificationDelegate ndelegate) : base(settings, services, ndelegate)
-        {
-        }
+        public PushManager(ShinyCoreServices services) : base(services) { }
 
 
         public override void Start()
         {
             base.Start();
 
-            Firebase.Core.App.Configure();
-            //Messaging.Notifications.ObserveMessagesDeleted
-            Messaging.SharedInstance.AutoInitEnabled = true;
+            if (this.CurrentRegistrationToken != null)
+                this.TryStartFirebase();
+        }
+
+
+        protected virtual void TryStartFirebase()
+        {
+            if (Messaging.SharedInstance == null)
+                Firebase.Core.App.Configure();
+
+            Messaging.SharedInstance!.AutoInitEnabled = true;
             Messaging.SharedInstance.Delegate = new FbMessagingDelegate
             (
                 async msg =>
                 {
+                    // I can't get access to the notification here
                     var dict = msg.AppData.FromNsDictionary();
-                    await this.Services.RunDelegates<IPushDelegate>(x => x.OnReceived(dict));
+                    await this.Services.Services.RunDelegates<IPushDelegate>(
+                        x => x.OnReceived(new PushNotification(dict, null))
+                    );
                 },
                 async token =>
                 {
                     this.CurrentRegistrationToken = token;
                     this.CurrentRegistrationTokenDate = DateTime.UtcNow;
-                    await this.Services.RunDelegates<IPushDelegate>(x => x.OnTokenChanged(token));
+                    await this.Services.Services.RunDelegates<IPushDelegate>(x => x.OnTokenChanged(token));
                 }
             );
         }
+
 
         public override async Task<PushAccessState> RequestAccess(CancellationToken cancelToken = default)
         {
@@ -45,6 +56,7 @@ namespace Shiny.Push.FirebaseMessaging
             if (access.Status != AccessState.Available)
                 return access;
 
+            this.TryStartFirebase();
             Messaging.SharedInstance.ApnsToken = access.RegistrationToken;
             //Messaging.SharedInstance.RetrieveFcmTokenAsync()
             var result = await InstanceId.SharedInstance.GetInstanceIdAsync();
@@ -62,22 +74,44 @@ namespace Shiny.Push.FirebaseMessaging
         }
 
 
-        public async Task SetTags(params string[] tags)
+        public async Task AddTag(string tag)
         {
+            var tags = this.RegisteredTags?.ToList() ?? new List<string>(1);
+            tags.Add(tag);
+
+            await Messaging.SharedInstance.SubscribeAsync(tag);
+            this.RegisteredTags = tags.ToArray();
+        }
+
+
+        public async Task RemoveTag(string tag)
+        {
+            await Messaging.SharedInstance.UnsubscribeAsync(tag);
             if (this.RegisteredTags != null)
             {
+                var tags = this.RegisteredTags.ToList();
+                if (tags.Remove(tag))
+                    this.RegisteredTags = tags.ToArray();
+            }
+        }
+
+
+        public async Task ClearTags()
+        {
+            if (this.RegisteredTags != null)
                 foreach (var tag in this.RegisteredTags)
-                {
                     await Messaging.SharedInstance.UnsubscribeAsync(tag);
-                }
-            }
+
+            this.RegisteredTags = null;
+        }
+
+
+        public async Task SetTags(params string[]? tags)
+        {
+            await this.ClearTags();
             if (tags != null)
-            {
                 foreach (var tag in tags)
-                {
-                    await Messaging.SharedInstance.SubscribeAsync(tag);
-                }
-            }
+                    await this.AddTag(tag);
         }
     }
 }

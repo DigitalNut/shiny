@@ -7,7 +7,7 @@ using Shiny.Locations;
 
 namespace Shiny.Testing.Locations
 {
-    public class TestGpsManager : IGpsManager
+    public class TestGpsManager : NotifyPropertyChanged, IGpsManager
     {
         readonly Subject<AccessState> accessSubject = new Subject<AccessState>();
 
@@ -38,6 +38,46 @@ namespace Shiny.Testing.Locations
         public IObservable<IGpsReading?> GetLastReading() => Observable.Return(this.LastGpsReading);
         public AccessState RequestAccessReply { get; set; } = AccessState.Available;
         public Task<AccessState> RequestAccess(GpsRequest request) => Task.FromResult(this.RequestAccessReply);
+
+
+        string? title;
+        public string? Title
+        {
+            get => this.title;
+            set => this.Set(ref this.title, value);
+        }
+
+
+        string? message;
+        public string? Message
+        {
+            get => this.message;
+            set => this.Set(ref this.message, value);
+        }
+
+
+        bool indeterministic;
+        public bool IsIndeterministic
+        {
+            get => this.indeterministic;
+            set => this.Set(ref this.indeterministic, value);
+        }
+
+
+        int progress;
+        public int Progress
+        {
+            get => this.progress;
+            set => this.Set(ref this.progress, value);
+        }
+
+
+        int total;
+        public int Total
+        {
+            get => this.total;
+            set => this.Set(ref this.total, value);
+        }
 
 
         public Task StartListener(GpsRequest? request = null)

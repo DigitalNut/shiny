@@ -2,6 +2,7 @@
 using System.Reactive.Threading.Tasks;
 using System.Threading.Tasks;
 using Android.Content;
+using Android.Gms.Location;
 using Android.Locations;
 using P = Android.Manifest.Permission;
 
@@ -10,7 +11,36 @@ namespace Shiny.Locations
 {
     static class PlatformExtensions
     {
-        public const string ACCESS_BACKGROUND_LOCATION = "android.permission.ACCESS_BACKGROUND_LOCATION";
+        public static LocationRequest ToNative(this GpsRequest request)
+        {
+            var nativeRequest = LocationRequest
+                .Create()
+                .SetInterval(request.Interval.ToMillis());
+
+            switch (request.Priority)
+            {
+                case GpsPriority.Low:
+                    nativeRequest.SetPriority(LocationRequest.PriorityLowPower);
+                    break;
+
+                case GpsPriority.Highest:
+                    nativeRequest.SetPriority(LocationRequest.PriorityHighAccuracy);
+                    break;
+
+                case GpsPriority.Normal:
+                default:
+                    nativeRequest.SetPriority(LocationRequest.PriorityBalancedPowerAccuracy);
+                    break;
+            }
+
+            if (request.ThrottledInterval != null)
+                nativeRequest.SetFastestInterval(request.ThrottledInterval.Value.ToMillis());
+
+            if (request.MinimumDistance != null)
+                nativeRequest.SetSmallestDisplacement((float)request.MinimumDistance.TotalMeters);
+
+            return nativeRequest;
+        }
 
 
         internal static AccessState GetLocationManagerStatus(this IAndroidContext context, bool gpsRequired, bool networkRequired)
@@ -38,7 +68,7 @@ namespace Shiny.Locations
 
             if (context.IsMinApiLevel(29) && background)
             {
-                status = context.GetCurrentAccessState(ACCESS_BACKGROUND_LOCATION);
+                status = context.GetCurrentAccessState(P.AccessBackgroundLocation);
                 if (status != AccessState.Available)
                     return status;
             }
@@ -56,19 +86,25 @@ namespace Shiny.Locations
                 return status;
 
             var locationPerm = fineAccess ? P.AccessFineLocation : P.AccessCoarseLocation;
-            if (context.IsMinApiLevel(29) && background)
-            {
-                return await context
-                    .RequestAccess
-                    (
-                        ACCESS_BACKGROUND_LOCATION,
-                        P.ForegroundService,
-                        locationPerm
-                    )
-                    .ToTask();
-            }
+            if (!context.IsMinApiLevel(29) || !background)
+                return await context.RequestAccess(locationPerm).ToTask();
 
-            return await context.RequestAccess(locationPerm).ToTask();
+            var access = await context
+                .RequestPermissions
+                (
+                    P.AccessBackgroundLocation,
+                    P.ForegroundService,
+                    locationPerm
+                )
+                .ToTask();
+
+            if (!access.IsGranted(locationPerm))
+                return AccessState.Denied;
+
+            if (!access.IsGranted(P.AccessBackgroundLocation))
+                return AccessState.Restricted;
+
+            return AccessState.Available;
         }
 
 

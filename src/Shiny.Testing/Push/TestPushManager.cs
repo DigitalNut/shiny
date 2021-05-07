@@ -10,8 +10,8 @@ namespace Shiny.Testing.Push
 {
     public class TestPushManager : IPushManager, IPushTagSupport
     {
-        public Subject<IDictionary<string, string>> NotificationSubject { get; } = new Subject<IDictionary<string, string>>();
-        public IObservable<IDictionary<string, string>> WhenReceived() => this.NotificationSubject;
+        public Subject<PushNotification> ReceiveSubject { get; } = new Subject<PushNotification>();
+        public IObservable<PushNotification> WhenReceived() => this.ReceiveSubject;
         public AccessState ResultStatus { get; set; } = AccessState.Available;
         public DateTime? CurrentRegistrationTokenDate { get; set; }
         public string? CurrentRegistrationToken { get; set; }
@@ -19,10 +19,37 @@ namespace Shiny.Testing.Push
         public Task<PushAccessState> RequestAccess(CancellationToken cancelToken = default) => Task.FromResult(new PushAccessState(this.ResultStatus, this.CurrentRegistrationToken));
         public Task UnRegister() => Task.CompletedTask;
 
-        public string[]? RegisteredTags { get; private set; }
-        public Task SetTags(params string[] tags)
+
+        readonly List<string> tags = new List<string>();
+        public string[]? RegisteredTags => this.tags.ToArray();
+
+
+        public Task AddTag(string tag)
         {
-            this.RegisteredTags = tags;
+            this.tags.Add(tag);
+            return Task.CompletedTask;
+        }
+
+
+        public Task RemoveTag(string tag)
+        {
+            this.tags.Remove(tag);
+            return Task.CompletedTask;
+        }
+
+
+        public Task ClearTags()
+        {
+            this.tags.Clear();
+            return Task.CompletedTask;
+        }
+
+        public Task SetTags(params string[]? tags)
+        {
+            this.tags.Clear();
+            if (tags != null)
+                this.tags.AddRange(tags);
+
             return Task.CompletedTask;
         }
     }

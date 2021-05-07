@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Threading.Tasks;
-using Shiny.Infrastructure;
 
 
 namespace Shiny.BluetoothLE
@@ -21,13 +20,12 @@ namespace Shiny.BluetoothLE
         /// <param name="peripheral"></param>
         /// <returns></returns>
         Task OnConnected(IPeripheral peripheral);
+    }
 
 
-        /// <summary>
-        /// This is normally used for background scan results
-        /// </summary>
-        /// <param name="result"></param>
-        /// <returns></returns>
-        Task OnScanResult(ScanResult result);
+    public abstract class BleDelegate : IBleDelegate
+    {
+        public virtual Task OnAdapterStateChanged(AccessState state) => Task.CompletedTask;
+        public virtual Task OnConnected(IPeripheral peripheral) => Task.CompletedTask;
     }
 }

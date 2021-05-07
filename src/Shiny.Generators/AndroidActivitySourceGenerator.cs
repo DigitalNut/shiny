@@ -14,6 +14,7 @@ namespace Shiny.Generators
 
         public void Execute(GeneratorExecutionContext context)
         {
+            context.TryDebug();
             this.context = context;
             var attributeData = context.GetCurrentAssemblyAttribute(Constants.ShinyApplicationAttributeTypeName);
 
@@ -36,6 +37,13 @@ namespace Shiny.Generators
                 return;
 
             //if (!activityType.IsPartialClass())
+            //{
+            //    this.context.Log(
+            //        "SHINY010",
+            //        $"Activity '{activityTypeName}' is not marked as partial, you must manually call the Shiny hooks yourself"
+            //    );
+            //    return;
+            //}
 
             var activities = this
                 .context
@@ -67,6 +75,7 @@ namespace Shiny.Generators
                 {
                     this.TryAppendOnCreate(activity, builder);
                     this.TryAppendNewIntent(activity, builder);
+                    this.TryAppendActivityResult(activity, builder);
                     this.TryAppendRequestPermissionResult(activity, builder);
                 }
             }
@@ -76,21 +85,30 @@ namespace Shiny.Generators
 
         void TryAppendOnCreate(INamedTypeSymbol activity, IndentedStringBuilder builder)
         {
-            if (!activity.HasMethod("OnCreate"))
+            if (activity.HasMethod("OnCreate"))
             {
+                this.context.Log(
+                    "SHINY005",
+                    $"OnCreate already exists on '{activity.ToDisplayString()}', make sure you call the this.ShinyOnCreate hook for this"
+                );
+            }
+            else
+            {
+                builder.AppendLineInvariant("partial void OnBeforeCreate(Bundle savedInstanceState);");
+                builder.AppendLineInvariant("partial void OnAfterCreate(Bundle savedInstanceState);");
                 using (builder.BlockInvariant("protected override void OnCreate(Bundle savedInstanceState)"))
                 {
                     builder.AppendLineInvariant("this.ShinyOnCreate();");
-                    if (activity.HasMethod("OnCreating"))
-                        builder.AppendLineInvariant("this.OnCreating(savedInstanceState);");
+                    builder.AppendLineInvariant("this.OnBeforeCreate(savedInstanceState);");
+                    this.TryAppendOnCreateThirdParty(activity, builder);
 
                     if (String.IsNullOrWhiteSpace(this.values.XamarinFormsAppTypeName))
                     {
-                        builder.AppendFormatInvariant("base.OnCreate(savedInstanceState);");
+                        builder.AppendLineInvariant("base.OnCreate(savedInstanceState);");
                     }
                     else
                     {
-                        var xfFormsActivityType = context.Compilation.GetTypeByMetadataName("Xamarin.Forms.Platform.Android.FormsAppCompatActivity");
+                        var xfFormsActivityType = this.context.Compilation.GetTypeByMetadataName("Xamarin.Forms.Platform.Android.FormsAppCompatActivity");
                         if (xfFormsActivityType != null && activity.Inherits(xfFormsActivityType))
                         {
                             // do XF stuff
@@ -100,30 +118,67 @@ namespace Shiny.Generators
                             builder.AppendLineInvariant("global::Xamarin.Forms.Forms.Init(this, savedInstanceState);");
                             builder.AppendLineInvariant($"this.LoadApplication(new {this.values.XamarinFormsAppTypeName}());");
                         }
+                        else
+                        {
+                            builder.AppendLineInvariant("base.OnCreate(savedInstanceState);");
+                        }
                     }
-                    //this.TryAppendOnCreateThirdParty(activity, builder);
+                    builder.AppendLineInvariant("this.OnAfterCreate(savedInstanceState);");
                 }
             }
         }
 
 
-        //void TryAppendOnCreateThirdParty(INamedTypeSymbol activity, IndentedStringBuilder builder)
-        //{
-        //    // AiForms.SettingsView
-        //    if (this.Context.Compilation.GetTypeByMetadataName("AiForms.Renderers.Droid.SettingsViewInit") != null)
-        //        builder.AppendLineInvariant("global::AiForms.Renderers.Droid.SettingsViewInit.Init();");
+        void TryAppendOnCreateThirdParty(INamedTypeSymbol activity, IndentedStringBuilder builder)
+        {
 
-        //    // XF Material
-        //    if (this.Context.Compilation.GetTypeByMetadataName("XF.Material.Forms.Material") != null)
-        //        builder.AppendLineInvariant("global::XF.Material.Droid.Material.Init(this, savedInstanceState);");
-        //    else if (this.Context.Compilation.GetTypeByMetadataName("Rg.Plugins.Popup.Popup") != null)
-        //        builder.AppendLineInvariant("global::Rg.Plugins.Popup.Popup.Init(this, savedInstanceState);");
-        //}
+            // AiForms.SettingsView
+            if (this.context.Compilation.GetTypeByMetadataName("AiForms.Renderers.Droid.SettingsViewInit") != null)
+                builder.AppendLineInvariant("global::AiForms.Renderers.Droid.SettingsViewInit.Init();");
+
+            // XF Material
+            if (this.context.Compilation.GetTypeByMetadataName("XF.Material.Forms.Material") != null)
+                builder.AppendLineInvariant("global::XF.Material.Droid.Material.Init(this, savedInstanceState);");
+            else if (this.context.Compilation.GetTypeByMetadataName("Rg.Plugins.Popup.Popup") != null)
+                builder.AppendLineInvariant("global::Rg.Plugins.Popup.Popup.Init(this, savedInstanceState);");
+        }
+
+
+        void TryAppendActivityResult(INamedTypeSymbol activity, IndentedStringBuilder builder)
+        {
+            if (activity.HasMethod("OnActivityResult"))
+            {
+                this.context.Log(
+                    "SHINY005",
+                    $"OnActivityResult already exists on '{activity.ToDisplayString()}', make sure you call the this.ShinyOnActivityResult hook for this"
+                );
+            }
+            else
+            {
+                using (builder.BlockInvariant("protected override void OnActivityResult(int requestCode, Result resultCode, Intent data)"))
+                {
+                    builder.AppendLine("base.OnActivityResult(requestCode, resultCode, data);");
+                    builder.AppendLine();
+                    builder.AppendLine("this.ShinyOnActivityResult(requestCode, resultCode, data);");
+
+                    if (this.context.HasMsal())
+                        builder.AppendLine("global::Microsoft.Identity.Client.AuthenticationContinuationHelper.SetAuthenticationContinuationEventArgs(requestCode, resultCode, data);");
+                    builder.AppendLine();
+                }
+            }
+        }
 
 
         void TryAppendRequestPermissionResult(INamedTypeSymbol activity, IndentedStringBuilder builder)
         {
-            if (!activity.HasMethod("OnRequestPermissionsResult"))
+            if (activity.HasMethod("OnRequestPermissionsResult"))
+            {
+                this.context.Log(
+                    "SHINY005",
+                    $"OnRequestPermissionsResult already exists on '{activity.ToDisplayString()}', make sure you call the this.ShinyOnPermissionsResult hook for this"
+                );
+            }
+            else
             {
                 using (builder.BlockInvariant("public override void OnRequestPermissionsResult(int requestCode, string[] permissions, [GeneratedEnum] Permission[] grantResults)"))
                 {
@@ -141,7 +196,14 @@ namespace Shiny.Generators
 
         void TryAppendNewIntent(INamedTypeSymbol activity, IndentedStringBuilder builder)
         {
-            if (!activity.HasMethod("OnNewIntent"))
+            if (activity.HasMethod("OnNewIntent"))
+            {
+                this.context.Log(
+                    "SHINY006",
+                    $"OnNewIntent already exists on '{activity.ToDisplayString()}', make sure you call the this.ShinyOnNewIntent hook for this"
+                );
+            }
+            else
             {
                 using (builder.BlockInvariant("protected override void OnNewIntent(Intent intent)"))
                 {

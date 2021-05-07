@@ -8,11 +8,8 @@ using Shiny.Infrastructure;
 
 namespace Shiny.Beacons
 {
-#if __ANDROID__
-    public class BeaconMonitoringManager : NotifyPropertyChanged, IBeaconMonitoringManager, IBeaconMonitoringNotificationConfiguration, IShinyStartupTask
-#else
-    public class BeaconMonitoringManager : IBeaconMonitoringManager, IShinyStartupTask
-#endif
+
+    public partial class BeaconMonitoringManager : IBeaconMonitoringManager, IShinyStartupTask
     {
         readonly IRepository repository;
         readonly IBleManager bleManager;
@@ -37,42 +34,13 @@ namespace Shiny.Beacons
             this.repository = repository;
         }
 
-#if __ANDROID__
 
-        string? title;
-        public string? Title
-        {
-            get => this.title;
-            set => this.Set(ref this.title, value);
-        }
-
-
-        string? description;
-        public string? Description
-        {
-            get => this.description;
-            set => this.Set(ref this.description, value);
-        }
-
-
-        string? ticker;
-        public string? Ticker
-        {
-            get => this.ticker;
-            set => this.Set(ref this.ticker, value);
-        }
-
-#endif
 
         public async void Start()
         {
-#if __ANDROID__
             var regions = await this.GetMonitoredRegions();
-            if (!regions.IsEmpty() && !ShinyBeaconMonitoringService.IsStarted)
-                this.context.StartService(typeof(ShinyBeaconMonitoringService), true);
-#else
-            // TODO: start backgroundtask manually?
-#endif
+            if (!regions.IsEmpty())
+                this.StartService();
         }
 
 
@@ -81,10 +49,7 @@ namespace Shiny.Beacons
             var stored = await this.repository.Set(region.Identifier, region);
             var eventType = stored ? BeaconRegisterEventType.Add : BeaconRegisterEventType.Update;
             this.messageBus.Publish(new BeaconRegisterEvent(eventType, region));
-#if __ANDROID__
-            if (!ShinyBeaconMonitoringService.IsStarted)
-                this.context.StartService(typeof(ShinyBeaconMonitoringService), true);
-#endif
+            this.StartService();
         }
 
 
@@ -96,11 +61,9 @@ namespace Shiny.Beacons
                 await this.repository.Remove<BeaconRegion>(identifier);
                 this.messageBus.Publish(new BeaconRegisterEvent(BeaconRegisterEventType.Remove, region));
 
-#if __ANDROID__
                 var regions = await this.repository.GetAll<BeaconRegion>();
                 if (regions.Count == 0)
-                    this.context.StopService(typeof(ShinyBeaconMonitoringService));
-#endif
+                    this.StopService();
             }
         }
 
@@ -109,17 +72,14 @@ namespace Shiny.Beacons
         {
             await this.repository.Clear<BeaconRegion>();
             this.messageBus.Publish(new BeaconRegisterEvent(BeaconRegisterEventType.Clear));
-
-#if __ANDROID__
-            this.context.StopService(typeof(ShinyBeaconMonitoringService));
-#endif
+            this.StopService();
         }
 
 
         public async Task<AccessState> RequestAccess()
         {
             var access = await this.bleManager.RequestAccess().ToTask();
-#if __ANDROID__
+#if MONOANDROID
             if (access == AccessState.Available && this.context.IsMinApiLevel(26))
                 access = await this.context.RequestAccess(Android.Manifest.Permission.ForegroundService).ToTask();
 #endif
@@ -127,7 +87,28 @@ namespace Shiny.Beacons
         }
 
 
-        public async Task<IEnumerable<BeaconRegion>> GetMonitoredRegions() => await this.repository.GetAll<BeaconRegion>();
+        public async Task<IEnumerable<BeaconRegion>> GetMonitoredRegions()
+            => await this.repository.GetAll<BeaconRegion>();
+
+
+        void StartService()
+        {
+#if MONOANDROID
+            if (!ShinyBeaconMonitoringService.IsStarted)
+                this.context.StartService(typeof(ShinyBeaconMonitoringService));
+            // TODO: uwp
+#endif
+        }
+
+
+        void StopService()
+        {
+#if MONOANDROID
+            if (ShinyBeaconMonitoringService.IsStarted)
+                this.context.StopService(typeof(ShinyBeaconMonitoringService));
+// TODO: uwp
+#endif
+        }
     }
 }
 

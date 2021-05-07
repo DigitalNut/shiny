@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Reactive.Linq;
 using System.Reactive.Threading.Tasks;
 using CoreBluetooth;
+using Foundation;
 
 
 namespace Shiny.BluetoothLE.Hosting
@@ -15,31 +16,15 @@ namespace Shiny.BluetoothLE.Hosting
         readonly IDictionary<string, GattService> services = new Dictionary<string, GattService>();
 
 
-        public AccessState Status
+        public AccessState Status => this.manager.State switch
         {
-            get
-            {
-                switch (this.manager.State)
-                {
-                    case CBPeripheralManagerState.PoweredOff:
-                        return AccessState.Disabled;
-
-                    case CBPeripheralManagerState.Unauthorized:
-                        return AccessState.Denied;
-
-                    case CBPeripheralManagerState.Unsupported:
-                        return AccessState.NotSupported;
-
-                    case CBPeripheralManagerState.PoweredOn:
-                        return AccessState.Available;
-
-                    case CBPeripheralManagerState.Resetting:
-                    case CBPeripheralManagerState.Unknown:
-                    default:
-                        return AccessState.Unknown;
-                }
-            }
-        }
+            CBPeripheralManagerState.PoweredOff => AccessState.Disabled,
+            CBPeripheralManagerState.Unauthorized => AccessState.Denied,
+            CBPeripheralManagerState.Unsupported => AccessState.NotSupported,
+            CBPeripheralManagerState.PoweredOn => AccessState.Available,
+            //  CBPeripheralManagerState.Resetting, Unknown
+            _ => AccessState.Unknown
+        };
 
 
         public IObservable<AccessState> WhenStatusChanged() => Observable.Create<AccessState>(ob =>
@@ -51,19 +36,49 @@ namespace Shiny.BluetoothLE.Hosting
 
 
         public bool IsAdvertising => this.manager.Advertising;
-        public async Task StartAdvertising(AdvertisementData? adData = null)
+        public async Task StartAdvertising(AdvertisementOptions? options = null)
         {
             if (this.manager.Advertising)
                 throw new ArgumentException("Advertising is already active");
 
-            await this.manager.WhenReady().ToTask();
-            this.manager.StartAdvertising(new StartAdvertisingOptions
+            options ??= new AdvertisementOptions();
+            await this.manager
+                .WhenReady()
+                .Timeout(TimeSpan.FromSeconds(10))
+                .ToTask();
+
+            var tcs = new TaskCompletionSource<object>();
+            var handler = new EventHandler<NSErrorEventArgs>((sender, args) =>
             {
-                LocalName = adData?.LocalName,
-                ServicesUUID = this.services
-                    .Select(x => CBUUID.FromString(x.Value.Uuid))
-                    .ToArray()
+                if (args.Error == null)
+                    tcs.SetResult(null);
+                else
+                    tcs.SetException(new ArgumentException(args.Error.LocalizedDescription));
             });
+
+            try
+            {
+                this.manager.AdvertisingStarted += handler;
+
+                var opts = new StartAdvertisingOptions();
+                var serviceUuids = options.UseGattServiceUuids
+                    ? this.services.Keys.ToList()
+                    : options.ServiceUuids;
+
+                if (serviceUuids.Count > 0)
+                {
+                    opts.ServicesUUID = serviceUuids
+                        .Select(CBUUID.FromString)
+                        .ToArray();
+                }
+
+                this.manager.StartAdvertising(opts);
+                await tcs.Task.ConfigureAwait(false);
+            }
+            finally
+            {
+                this.manager.AdvertisingStarted -= handler;
+            }
         }
 
 

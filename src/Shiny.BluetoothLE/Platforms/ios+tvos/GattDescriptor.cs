@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Linq;
 using System.Reactive.Linq;
 using CoreBluetooth;
 using Foundation;
@@ -25,20 +24,21 @@ namespace Shiny.BluetoothLE
         }
 
 
-        public override IObservable<DescriptorGattResult> Read() => Observable.Create<DescriptorGattResult>(ob =>
+        public override IObservable<GattDescriptorResult> Read() => Observable.Create<GattDescriptorResult>(ob =>
         {
             var handler = new EventHandler<CBDescriptorEventArgs>((sender, args) =>
             {
                 if (!this.Equals(args.Descriptor))
                     return;
 
-                
                 if (args.Error != null)
+                {
                     ob.OnError(new BleException(args.Error.Description));
+                }
                 else
-                { 
+                {
                     var value = args.Descriptor.ToByteArray();
-                    ob.Respond(new DescriptorGattResult(this, value));
+                    ob.Respond<GattDescriptorResult>(new GattDescriptorResult(this, value));
                 }
             });
             this.Peripheral.UpdatedValue += handler;
@@ -48,21 +48,19 @@ namespace Shiny.BluetoothLE
         });
 
 
-        public override IObservable<DescriptorGattResult> Write(byte[] data) => Observable.Create<DescriptorGattResult>(ob =>
+        public override IObservable<GattDescriptorResult> Write(byte[] data) => Observable.Create<GattDescriptorResult>(ob =>
         {
             var handler = new EventHandler<CBDescriptorEventArgs>((sender, args) =>
             {
                 if (!this.Equals(args.Descriptor))
                     return;
 
-                
                 if (args.Error != null)
                     ob.OnError(new BleException(args.Error.Description));
-                
                 else
                 {
                     var bytes = args.Descriptor.ToByteArray();
-                    ob.Respond(new DescriptorGattResult(this, bytes));
+                    ob.Respond(new GattDescriptorResult(this, bytes));
                 }
             });
 

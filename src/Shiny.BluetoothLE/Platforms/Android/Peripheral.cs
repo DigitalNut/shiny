@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
@@ -19,8 +20,13 @@ namespace Shiny.BluetoothLE
         internal PeripheralContext Context { get; }
 
 
-        public Peripheral(CentralContext centralContext, BluetoothDevice native)
-            : base(native.Name, ToDeviceId(native.Address).ToString())
+        public Peripheral(
+            ManagerContext centralContext,
+            BluetoothDevice native
+        ) : base(
+            native.Name,
+            ToDeviceId(native.Address).ToString()
+        )
         {
             this.connSubject = new Subject<ConnectionState>();
             this.Context = new PeripheralContext(centralContext, native);
@@ -50,15 +56,18 @@ namespace Shiny.BluetoothLE
 
 
         // android does not have a find "1" service - it must discover all services.... seems shit
-        public override IObservable<IGattService> GetKnownService(string serviceUuid) => this
-            .DiscoverServices()
-            .Where(x => x.Uuid.Equals(serviceUuid, StringComparison.InvariantCultureIgnoreCase))
+        public override IObservable<IGattService?> GetKnownService(string serviceUuid, bool throwIfNotFound = false) => this
+            .GetServices()
+            .Select(x => x.FirstOrDefault(y => y
+                .Uuid
+                .Equals(serviceUuid, StringComparison.InvariantCultureIgnoreCase)
+            ))
             .Take(1)
-            .Select(x => x);
+            .Assert(serviceUuid, throwIfNotFound);
 
 
         public override IObservable<string> WhenNameUpdated() => this.Context
-            .CentralContext
+            .ManagerContext
             .ListenForMe(BluetoothDevice.ActionNameChanged, this)
             .Select(x => x.Name);
 
@@ -72,49 +81,48 @@ namespace Shiny.BluetoothLE
                 .Merge(this.connSubject);
 
 
-        public override IObservable<IGattService> DiscoverServices() => Observable.Create<IGattService>(ob =>
-        {
-            this.AssertConnection();
-
-            var sub = this.Context.Callbacks.ServicesDiscovered.Subscribe(cb =>
+        public override IObservable<IList<IGattService>> GetServices()
+            => this.Context.Invoke(Observable.Create<IList<IGattService>>(ob =>
             {
-                if (cb.Gatt?.Services == null)
-                    return;
+                this.AssertConnection();
+                var sub = this.Context
+                    .Callbacks
+                    .ServicesDiscovered
+                    .Select(x => x.Gatt?.Services)
+                    .Where(x => x != null)
+                    .Select(x => x
+                        .Select(native => new GattService(this, this.Context, native))
+                        .Cast<IGattService>()
+                        .ToList()
+                    )
+                    .Subscribe(
+                        ob.Respond,
+                        ob.OnError
+                    );
 
-                foreach (var ns in cb.Gatt.Services)
-                {
-                    var service = new GattService(this, this.Context, ns);
-                    ob.OnNext(service);
-                }
-                ob.OnCompleted();
-            });
-
-            //this.context.RefreshServices();
-            this.Context.Gatt.DiscoverServices();
-
-            return sub;
-        });
+                this.Context.Gatt.DiscoverServices();
+                return sub;
+            }));
 
 
-        public override IObservable<int> ReadRssi() => Observable.Create<int>(ob =>
+        public override IObservable<int> ReadRssi()
         {
             this.AssertConnection();
 
-            var sub = this.Context
-                .Callbacks
-                .ReadRemoteRssi
-                .Take(1)
-                .Subscribe(cb =>
-                {
-                    if (cb.IsSuccessful)
-                        ob.Respond(cb.Rssi);
-                    else
-                        ob.OnError(new BleException("Failed to get RSSI - " + cb.Status));
-                });
+            return this.Context.Invoke(
+                this.Context
+                    .Callbacks
+                    .ReadRemoteRssi
+                    .Take(1)
+                    .Select(x =>
+                    {
+                        if (x.IsSuccessful)
+                            throw new BleException("Failed to get RSSI - " + x.Status);
 
-            this.Context.Gatt.ReadRemoteRssi();
-            return sub;
-        });
+                        return x.Rssi;
+                    })
+            );
+        }
 
 
         internal string? PairingRequestPin { get; set; }
@@ -134,21 +142,18 @@ namespace Shiny.BluetoothLE
             else
             {
                 PairingRequestPin = pin;
-                disp.Add(this.Context
-                    .CentralContext
-                    .ListenForMe(CentralContext.BlePairingFailed, this)
+                this.Context
+                    .ManagerContext
+                    .ListenForMe(ManagerContext.BlePairingFailed, this)
                     .Subscribe(_ => ob.Respond(false))
-                );
-                disp.Add(this.Context
-                    .CentralContext
+                    .DisposedBy(disp);
+
+                this.Context
+                    .ManagerContext
                     .ListenForMe(BluetoothDevice.ActionBondStateChanged, this)
-                    .Where(x => this.Context.NativeDevice.BondState != Bond.Bonding)
-                    .Subscribe(x =>
-                    {
-                        var result = this.PairingStatus == PairingState.Paired;
-                        ob.Respond(result);
-                    })
-                );
+                    .Where(x => this.Context.NativeDevice.BondState == Bond.Bonded)
+                    .Subscribe(_ => ob.Respond(true))
+                    .DisposedBy(disp);
 
                 if (!this.Context.NativeDevice.CreateBond())
                     ob.Respond(false);
@@ -157,21 +162,11 @@ namespace Shiny.BluetoothLE
         });
 
 
-        public PairingState PairingStatus
+        public PairingState PairingStatus => this.Context.NativeDevice.BondState switch
         {
-            get
-            {
-                switch (this.Context.NativeDevice.BondState)
-                {
-                    case Bond.Bonded:
-                        return PairingState.Paired;
-
-                    default:
-                    case Bond.None:
-                        return PairingState.NotPaired;
-                }
-            }
-        }
+            Bond.Bonded => PairingState.Paired,
+            _ => PairingState.NotPaired
+        };
 
 
         int currentMtu = 20;
@@ -184,21 +179,15 @@ namespace Shiny.BluetoothLE
         }));
 
 
-        public IObservable<int> WhenMtuChanged() => Observable
-            .Create<int>(ob => this.Context
-                .Callbacks
-                .MtuChanged
-                .Subscribe(cb =>
-                {
-                    if (!cb.IsSuccessful)
-                        ob.OnError(new BleException("Failed to request MTU - " + cb.Status));
-                    else
-                    {
-                        this.currentMtu = cb.Mtu;
-                        ob.Respond(cb.Mtu);
-                    }
-                })
-            )
+        public IObservable<int> WhenMtuChanged() => this.Context
+            .Callbacks
+            .MtuChanged
+            .Where(x => x.IsSuccessful)
+            .Select(x =>
+            {
+                this.currentMtu = x.Mtu;
+                return x.Mtu;
+            })
             .StartWith(this.currentMtu);
 
 

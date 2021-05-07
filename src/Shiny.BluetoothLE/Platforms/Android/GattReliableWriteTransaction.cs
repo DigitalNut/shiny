@@ -18,7 +18,7 @@ namespace Shiny.BluetoothLE
         }
 
 
-        public override IObservable<CharacteristicGattResult> Write(IGattCharacteristic characteristic, byte[] value)
+        public override IObservable<GattCharacteristicResult> Write(IGattCharacteristic characteristic, byte[] value)
         {
             // just write to the standard characteristic write
             this.AssertAction();
@@ -42,7 +42,7 @@ namespace Shiny.BluetoothLE
                     }
                     else
                     {
-                        this.Status = TransactionState.Aborted; // TODO: or errored?
+                        this.Status = TransactionState.Aborted;
                         ob.OnError(new GattReliableWriteTransactionException("Error committing transaction"));
                     }
                 });

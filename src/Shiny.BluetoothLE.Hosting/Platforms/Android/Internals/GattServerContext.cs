@@ -25,11 +25,8 @@ namespace Shiny.BluetoothLE.Hosting.Internals
         {
             get
             {
-                if (this.server == null)
-                {
-                    this.server = this.Manager.OpenGattServer(this.Context.AppContext, this);
-                }
-                return this.server;
+                this.server ??= this.Manager.OpenGattServer(this.Context.AppContext, this)!;
+                return this.server!;
             }
         }
 
@@ -37,7 +34,7 @@ namespace Shiny.BluetoothLE.Hosting.Internals
         public void CloseServer()
         {
             this.server.Close();
-            this.server = null;
+            this.server = null!;
         }
 
 
@@ -81,11 +78,9 @@ namespace Shiny.BluetoothLE.Hosting.Internals
             => this.ConnectionStateChanged.OnNext(new ConnectionStateChangeEventArgs(device, status, newState));
 
 
-
         public Subject<GattEventArgs> NotificationSent { get; } = new Subject<GattEventArgs>();
         public override void OnNotificationSent(BluetoothDevice peripheral, AGattStatus status)
             => this.NotificationSent.OnNext(new GattEventArgs(peripheral));
-
 
 
         //public override void OnExecuteWrite(BluetoothDevice peripheral, int requestId, bool execute)

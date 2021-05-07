@@ -8,7 +8,7 @@ using Windows.Foundation;
 using Windows.Networking.PushNotifications;
 using Windows.ApplicationModel.Background;
 using Windows.UI.Notifications;
-using Shiny.Settings;
+using Shiny.Infrastructure;
 
 
 namespace Shiny.Push
@@ -16,7 +16,7 @@ namespace Shiny.Push
     public class PushManager : AbstractPushManager, IShinyStartupTask
     {
         PushNotificationChannel channel;
-        public PushManager(ISettings settings) : base(settings) {}
+        public PushManager(ShinyCoreServices services) : base(services) {}
 
 
         public void Start()
@@ -29,12 +29,20 @@ namespace Shiny.Push
         }
 
 
-        public override IObservable<IDictionary<string, string>> WhenReceived() => Observable.Create<IDictionary<string, string>>(async ob =>
+        DateTime? CurrentRegistrationExpiryDate
+        {
+            get => this.Settings.Get<DateTime?>(nameof(this.CurrentRegistrationExpiryDate));
+            set => this.Settings.SetOrRemove(nameof(this.CurrentRegistrationExpiryDate), value);
+        }
+
+
+        public override IObservable<PushNotification> WhenReceived() => Observable.Create<PushNotification>(ob =>
         {
             var handler = new TypedEventHandler<PushNotificationChannel, PushNotificationReceivedEventArgs>((sender, args) =>
             {
                 var headers = ExtractHeaders(args);
-                ob.OnNext(headers);
+                var pr = new PushNotification(headers, null);
+                ob.OnNext(pr);
             });
             this.channel.PushNotificationReceived += handler;
             return () => this.channel.PushNotificationReceived -= handler;
@@ -91,6 +99,7 @@ namespace Shiny.Push
             }
             return headers;
         }
+
 
         public static IDictionary<string, string> ExtractHeaders(object args)
         {

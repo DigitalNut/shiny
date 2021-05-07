@@ -1,16 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq.Expressions;
 using System.Reactive;
+using System.Reactive.Concurrency;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
-using System.Reactive.Threading.Tasks;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
+using Shiny.Infrastructure;
 
 
 namespace Shiny
@@ -28,32 +26,54 @@ namespace Shiny
     }
 
 
-    public static class RxExtensions
+    public static partial class Extensions
     {
-        static PropertyInfo GetPropertyInfo<TSender, TRet>(this TSender sender, Expression<Func<TSender, TRet>> expression)
+        /// <summary>
+        /// Passes the last and current values from the stream
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="ob"></param>
+        /// <returns></returns>
+        public static IObservable<Tuple<T, T>> WithPrevious<T>(this IObservable<T> ob)
+            => ob.Scan(Tuple.Create(default(T), default(T)), (acc, current) => Tuple.Create(acc.Item2, current));
+
+
+
+        /// <summary>
+        /// This is to make chaining easier when a scheduler is null
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="ob"></param>
+        /// <param name="scheduler"></param>
+        /// <returns></returns>
+        public static IObservable<T> ObserveOnIf<T>(this IObservable<T> ob, IScheduler? scheduler)
         {
-            if (sender == null)
-                throw new ArgumentException("Sender is null");
+            if (scheduler != null)
+                ob.ObserveOn(scheduler);
 
-            var member = (expression as LambdaExpression)?.Body as MemberExpression;
-            if (member == null)
-                throw new ArgumentException("Invalid lamba expression - body is not a member expression");
-
-            var property = sender.GetType().GetRuntimeProperty(member.Member.Name);
-            return property;
+            return ob;
         }
 
 
-        public static Task WithTimeout(this Task task, TimeSpan ts) => Observable
-            .FromAsync(() => task)
-            .Timeout(ts)
-            .ToTask(CancellationToken.None);
-
-
-        public static Task<T> WithTimeout<T>(this Task<T> task, TimeSpan ts) => Observable
-            .FromAsync(() => task)
-            .Timeout(ts)
-            .ToTask(CancellationToken.None);
+        /// <summary>
+        /// Runs an action only once when the first result is received
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="obs"></param>
+        /// <param name="action"></param>
+        /// <returns></returns>
+        public static IObservable<T> DoOnce<T>(this IObservable<T> obs, Action<T> action)
+        {
+            var count = 1;
+            return obs.Do(x =>
+            {
+                if (count == 0)
+                {
+                    Interlocked.Increment(ref count);
+                    action(x);
+                }
+            });
+        }
 
         /// <summary>
         /// A function from ReactiveUI - useful for non-ui stuff too ;)
@@ -82,15 +102,6 @@ namespace Shiny
         }
 
 
-        public static IObservable<NotifyCollectionChangedEventArgs> WhenCollectionChanged(this INotifyCollectionChanged collection) => Observable.Create<NotifyCollectionChangedEventArgs>(ob =>
-        {
-            var handler = new NotifyCollectionChangedEventHandler((sender, args) => ob.OnNext(args));
-            collection.CollectionChanged += handler;
-            return () => collection.CollectionChanged -= handler;
-        });
-
-
-
         /// <summary>
         /// This will buffer observable pings and timestamp them until the predicate check does not pass
         /// </summary>
@@ -116,50 +127,6 @@ namespace Shiny
                             list.Clear();
                         }
                     });
-            });
-
-
-        /// <summary>
-        /// Will watch for changes in any observable item in the ObservableCollection
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <param name="collection"></param>
-        /// <returns></returns>
-        public static IObservable<ItemChanged<T, string>> WhenItemChanged<T>(this ObservableCollection<T> collection)
-            where T : INotifyPropertyChanged
-            => Observable.Create<ItemChanged<T, string>>(ob =>
-            {
-                var disp = new CompositeDisposable();
-                foreach (var item in collection)
-                    disp.Add(item.WhenAnyProperty().Subscribe(ob.OnNext));
-
-                return disp;
-            });
-
-
-        /// <summary>
-        /// Will watch for a specific property change with any item in the ObservableCollection
-        /// </summary>
-        /// <typeparam name="T"></typeparam>
-        /// <typeparam name="TRet"></typeparam>
-        /// <param name="collection"></param>
-        /// <param name="expression"></param>
-        /// <returns></returns>
-        public static IObservable<ItemChanged<T, TRet>> WhenItemValueChanged<T, TRet>(
-            this ObservableCollection<T> collection,
-            Expression<Func<T, TRet>> expression) where T : INotifyPropertyChanged =>
-            Observable.Create<ItemChanged<T, TRet>>(ob =>
-            {
-                var disp = new CompositeDisposable();
-                foreach (var item in collection)
-                {
-                    disp.Add(item
-                        .WhenAnyProperty(expression)
-                        .Subscribe(x => ob.OnNext(new ItemChanged<T, TRet>(item, x)))
-                    );
-                }
-
-                return disp;
             });
 
 
@@ -210,6 +177,31 @@ namespace Shiny
                 .Subscribe();
 
 
+        public static IDisposable SubscribeAsync<T>(this IObservable<T> observable,
+                                                    Func<T, Task> onNextAsync,
+                                                    Action<Exception> onError)
+            => observable
+                .Select(x => Observable.FromAsync(() => onNextAsync(x)))
+                .Concat()
+                .Subscribe(
+                    _ => { },
+                    onError
+                );
+
+
+        public static IDisposable SubscribeAsync<T>(this IObservable<T> observable,
+                                                    Func<T, Task> onNextAsync,
+                                                    Action<Exception> onError,
+                                                    Action onComplete)
+            => observable
+                .Select(x => Observable.FromAsync(() => onNextAsync(x)))
+                .Concat()
+                .Subscribe(
+                    _ => { },
+                    onError,
+                    onComplete
+                );
+
         public static IDisposable SubscribeAsyncConcurrent<T>(this IObservable<T> observable, Func<T, Task> onNextAsync)
             => observable
                 .Select(x => Observable.FromAsync(() => onNextAsync(x)))
@@ -222,25 +214,5 @@ namespace Shiny
                 .Select(x => Observable.FromAsync(() => onNextAsync(x)))
                 .Merge(maxConcurrent)
                 .Subscribe();
-
-        //public static IDisposable ApplyMaxLengthConstraint<T>(this T npc, Expression<Func<T, string>> expression, int maxLength) where T : INotifyPropertyChanged
-        //{
-        //    var property = npc.GetPropertyInfo(expression);
-
-        //    if (property.PropertyType != typeof(string))
-        //        throw new ArgumentException($"You can only use maxlength constraints on string based properties - {npc.GetType()}.{property.Name}");
-
-        //    if (!property.CanWrite)
-        //        throw new ArgumentException($"You can only apply maxlength constraints to public setter properties - {npc.GetType()}.{property.Name}");
-
-        //    return npc
-        //        .WhenAnyProperty(expression)
-        //        .Where(x => x != null && x.Length > maxLength)
-        //        .Subscribe(x =>
-        //        {
-        //            var value = x.Substring(0, maxLength);
-        //            property.SetValue(npc, value);
-        //        });
-        //}
     }
 }

@@ -37,10 +37,17 @@ namespace Shiny
         public string Manufacturer { get; } = "Apple";
         public string Model { get; } = "";
 
+        public PlatformState Status => UIApplication.SharedApplication.ApplicationState switch
+        {
+            UIApplicationState.Active => PlatformState.Foreground,
+            _ => PlatformState.Background
+        };
+
 
         public void Register(IServiceCollection services)
         {
             services.RegisterCommonServices();
+            services.TryAddSingleton<AppleLifecycle>();
 #if __IOS__
             services.TryAddSingleton<IConnectivity, ConnectivityImpl>();
             if (BgTasksJobManager.IsAvailable)

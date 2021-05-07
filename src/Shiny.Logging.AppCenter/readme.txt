@@ -8,15 +8,3 @@ Docs: https://shinylib.net
 Blog: https://allancritchie.net
 
 Please star this project on GitHub if you use it in your projects
-
------------------------
-Setup
------------------------
-
-public class SampleStartup : Startup
-{
-    public override void ConfigureServices(IServiceCollection builder)
-    {
-        builder.UseAppCenterLogging(Constants.AppCenterTokens, true, false);
-    }
-}

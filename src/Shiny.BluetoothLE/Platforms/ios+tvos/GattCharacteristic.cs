@@ -1,5 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Reactive;
 using System.Reactive.Linq;
 using CoreBluetooth;
 using Foundation;
@@ -24,7 +26,7 @@ namespace Shiny.BluetoothLE
         }
 
 
-        public override IObservable<CharacteristicGattResult> Write(byte[] value, bool withResponse)
+        public override IObservable<GattCharacteristicResult> Write(byte[] value, bool withResponse)
         {
             this.AssertWrite(withResponse);
             return withResponse
@@ -33,7 +35,7 @@ namespace Shiny.BluetoothLE
         }
 
 
-        public override IObservable<CharacteristicGattResult> Read() => Observable.Create<CharacteristicGattResult>(ob =>
+        public override IObservable<GattCharacteristicResult> Read() => Observable.Create<GattCharacteristicResult>(ob =>
         {
             this.AssertRead();
             var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
@@ -41,10 +43,16 @@ namespace Shiny.BluetoothLE
                 if (!this.Equals(args.Characteristic))
                     return;
 
-                if (args.Error == null)
-                    ob.Respond(new CharacteristicGattResult(this, this.NativeCharacteristic.Value?.ToArray(), CharacteristicResultType.Read));
-                else
+                if (args.Error != null)
+                {
                     ob.OnError(new BleException(args.Error.Description));
+                }
+                else
+                {
+                    var value = this.NativeCharacteristic.Value?.ToArray();
+                    var result = new GattCharacteristicResult(this, value, GattCharacteristicResultType.Read);
+                    ob.Respond(result);
+                }
             });
             this.Peripheral.UpdatedCharacterteristicValue += handler;
             this.Peripheral.ReadValue(this.NativeCharacteristic);
@@ -53,73 +61,55 @@ namespace Shiny.BluetoothLE
         });
 
 
-        IObservable<CharacteristicGattResult> notifyOb;
-        public override IObservable<CharacteristicGattResult> Notify(bool sendHookEvent, bool enableIndicationsIfAvailable)
+        public override IObservable<IGattCharacteristic> EnableNotifications(bool enable, bool useIndicationsIfAvailable)
         {
             this.AssertNotify();
-
-            this.notifyOb ??= Observable.Create<CharacteristicGattResult>(ob =>
-            {
-                var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
-                {
-                    if (!this.Equals(args.Characteristic))
-                        return;
-
-                    if (args.Error == null)
-                        ob.OnNext(new CharacteristicGattResult(this, args.Characteristic.Value?.ToArray(), CharacteristicResultType.Notification));
-                    else
-                        ob.OnError(new BleException(args.Error.Description));
-                });
-                this.Peripheral.UpdatedCharacterteristicValue += handler;
-                this.Peripheral.SetNotifyValue(true, this.NativeCharacteristic);
-                this.IsNotifying = true;
-
-                return () =>
-                {
-                    this.Peripheral.SetNotifyValue(false, this.NativeCharacteristic);
-                    this.Peripheral.UpdatedCharacterteristicValue -= handler;
-                    this.IsNotifying = false;
-                };
-            })
-            .Publish()
-            .RefCount();
-
-            return this.notifyOb;
+            this.Peripheral.SetNotifyValue(enable, this.NativeCharacteristic);
+            this.IsNotifying = enable;
+            return Observable.Return(this);
         }
 
 
-        IObservable<IGattDescriptor> descriptorOb;
-        public override IObservable<IGattDescriptor> DiscoverDescriptors()
+        public override IObservable<GattCharacteristicResult> WhenNotificationReceived() => Observable.Create<GattCharacteristicResult>((Func<IObserver<GattCharacteristicResult>, Action>)(ob =>
         {
-            this.descriptorOb ??= Observable.Create<IGattDescriptor>(ob =>
+            var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
             {
-                var descriptors = new Dictionary<string, IGattDescriptor>();
+                if (!this.Equals(args.Characteristic))
+                    return;
 
-                var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
-                {
-                    if (this.NativeCharacteristic.Descriptors == null)
-                        return;
+                if (args.Error == null)
+                    ob.OnNext(new GattCharacteristicResult(this, args.Characteristic.Value?.ToArray(), GattCharacteristicResultType.Notification));
+                else
+                    ob.OnError(new BleException(args.Error.Description));
+            });
+            this.Peripheral.UpdatedCharacterteristicValue += handler;
 
-                    foreach (var dnative in this.NativeCharacteristic.Descriptors)
-                    {
-                        var wrap = new GattDescriptor(this, dnative);
-                        if (!descriptors.ContainsKey(wrap.Uuid))
-                        {
-                            descriptors.Add(wrap.Uuid, wrap);
-                            ob.OnNext(wrap);
-                        }
-                    }
-                });
-                this.Peripheral.DiscoveredDescriptor += handler;
-                this.Peripheral.DiscoverDescriptors(this.NativeCharacteristic);
+            return () => this.Peripheral.UpdatedCharacterteristicValue -= handler;
+        }));
 
-                return () => this.Peripheral.DiscoveredDescriptor -= handler;
-            })
-            .Replay()
-            .RefCount();
 
-            return this.descriptorOb;
-        }
+
+        public override IObservable<IList<IGattDescriptor>> GetDescriptors() => Observable.Create<IList<IGattDescriptor>>(ob =>
+        {
+            var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
+            {
+                if (this.NativeCharacteristic.Descriptors == null)
+                    return;
+
+                var list = this.NativeCharacteristic
+                    .Descriptors
+                    .Select(native => new GattDescriptor(this, native))
+                    .Distinct()
+                    .Cast<IGattDescriptor>()
+                    .ToList();
+
+                ob.Respond(list);
+            });
+            this.Peripheral.DiscoveredDescriptor += handler;
+            this.Peripheral.DiscoverDescriptors(this.NativeCharacteristic);
+
+            return () => this.Peripheral.DiscoveredDescriptor -= handler;
+        });
 
 
         public override bool Equals(object obj)
@@ -144,7 +134,7 @@ namespace Shiny.BluetoothLE
 
         #region Internals
 
-        IObservable<CharacteristicGattResult> WriteWithResponse(byte[] value) => Observable.Create<CharacteristicGattResult>(ob =>
+        IObservable<GattCharacteristicResult> WriteWithResponse(byte[] value) => Observable.Create<GattCharacteristicResult>((Func<IObserver<GattCharacteristicResult>, Action>)(ob =>
         {
             var data = NSData.FromArray(value);
             var handler = new EventHandler<CBCharacteristicEventArgs>((sender, args) =>
@@ -153,7 +143,7 @@ namespace Shiny.BluetoothLE
                     return;
 
                 if (args.Error == null)
-                    ob.Respond(new CharacteristicGattResult(this, null, CharacteristicResultType.Write));
+                    ob.Respond(new GattCharacteristicResult(this, null, GattCharacteristicResultType.Write));
                 else
                     ob.OnError(new BleException(args.Error.Description));
             });
@@ -161,7 +151,7 @@ namespace Shiny.BluetoothLE
             this.Peripheral.WriteValue(data, this.NativeCharacteristic, CBCharacteristicWriteType.WithResponse);
 
             return () => this.Peripheral.WroteCharacteristicValue -= handler;
-        });
+        }));
 
 
         bool Equals(CBCharacteristic ch)
@@ -179,7 +169,7 @@ namespace Shiny.BluetoothLE
         }
 
 
-        IObservable<CharacteristicGattResult> WriteWithoutResponse(byte[] value)
+        IObservable<GattCharacteristicResult> WriteWithoutResponse(byte[] value)
         {
             if (UIDevice.CurrentDevice.CheckSystemVersion(11, 0))
                 return this.NewInternalWrite(value);
@@ -188,7 +178,7 @@ namespace Shiny.BluetoothLE
         }
 
 
-        IObservable<CharacteristicGattResult> NewInternalWrite(byte[] value) => Observable.Create<CharacteristicGattResult>(ob =>
+        IObservable<GattCharacteristicResult> NewInternalWrite(byte[] value) => Observable.Create<GattCharacteristicResult>(ob =>
         {
             EventHandler? handler = null;
             if (this.Peripheral.CanSendWriteWithoutResponse)
@@ -208,11 +198,11 @@ namespace Shiny.BluetoothLE
         });
 
 
-        CharacteristicGattResult DoWriteNoResponse(byte[] value)
+        GattCharacteristicResult DoWriteNoResponse(byte[] value)
         {
             var data = NSData.FromArray(value);
             this.Peripheral.WriteValue(data, this.NativeCharacteristic, CBCharacteristicWriteType.WithoutResponse);
-            return new CharacteristicGattResult(this, value, CharacteristicResultType.WriteWithoutResponse);
+            return new GattCharacteristicResult(this, value, GattCharacteristicResultType.WriteWithoutResponse);
         }
 
         #endregion

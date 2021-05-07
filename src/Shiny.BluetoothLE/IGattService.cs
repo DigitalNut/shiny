@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 
 namespace Shiny.BluetoothLE
@@ -15,13 +16,14 @@ namespace Shiny.BluetoothLE
         /// <summary>
         /// This will return a repeatable observable of discovered characteristics
         /// </summary>
-        IObservable<IGattCharacteristic> DiscoverCharacteristics();
+        IObservable<IList<IGattCharacteristic>> GetCharacteristics();
 
         /// <summary>
-        /// Search for known characteristics
+        /// Find a known characteristic
         /// </summary>
-        /// <param name="characteristicIds"></param>
+        /// <param name="characteristicId"></param>
+        /// <param name="throwIfNotFound"></param>
         /// <returns></returns>
-        IObservable<IGattCharacteristic> GetKnownCharacteristics(params string[] characteristicIds);
+        IObservable<IGattCharacteristic?> GetKnownCharacteristic(string characteristicId, bool throwIfNotFound = false);
     }
 }

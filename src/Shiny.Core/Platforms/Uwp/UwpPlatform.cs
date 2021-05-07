@@ -20,12 +20,11 @@ namespace Shiny
         public static string BackgroundTaskName => typeof(Shiny.Support.Uwp.ShinyBackgroundTask).FullName;
 
         const string STARTUP_KEY = "ShinyStartupTypeName";
-        static bool hydrated = false;
         readonly Application? app;
 
 
         public UwpPlatform(Application app) : this() => this.app = app;
-        private UwpPlatform()
+        UwpPlatform()
         {
             var path = ApplicationData.Current.LocalFolder.Path;
             this.AppData = new DirectoryInfo(path);
@@ -48,32 +47,34 @@ namespace Shiny
         public string OperatingSystemVersion => "";
         public string MachineName => "";
 
+        public PlatformState Status { get; private set; } = PlatformState.Foreground;
 
         //https://docs.microsoft.com/en-us/uwp/api/Windows.UI.Xaml.Application?view=winrt-19041
-        public IObservable<PlatformState> WhenStateChanged() => Observable.Create<PlatformState>(ob =>
-        {
-            var fgHandler = new LeavingBackgroundEventHandler((sender, target) => ob.OnNext(PlatformState.Foreground));
-            var bgHandler = new EnteredBackgroundEventHandler((sender, target) => ob.OnNext(PlatformState.Background));
+        public IObservable<PlatformState> WhenStateChanged() => Observable
+            .Create<PlatformState>(ob =>
+            {
+                var fgHandler = new LeavingBackgroundEventHandler((sender, target) => ob.OnNext(PlatformState.Foreground));
+                var bgHandler = new EnteredBackgroundEventHandler((sender, target) => ob.OnNext(PlatformState.Background));
 
-            if (this.app == null)
-            {
-                ob.OnNext(PlatformState.Background);
-            }
-            else
-            {
-                // TODO: application will be normal if launched from background
-                this.app.LeavingBackground += fgHandler;
-                this.app.EnteredBackground += bgHandler;
-            }
-            return () =>
-            {
-                if (this.app != null)
+                if (this.app == null)
                 {
-                    this.app.LeavingBackground -= fgHandler;
-                    this.app.EnteredBackground -= bgHandler;
+                    ob.OnNext(PlatformState.Background);
                 }
-            };
-        });
+                else
+                {
+                    this.app.LeavingBackground += fgHandler;
+                    this.app.EnteredBackground += bgHandler;
+                }
+                return () =>
+                {
+                    if (this.app != null)
+                    {
+                        this.app.LeavingBackground -= fgHandler;
+                        this.app.EnteredBackground -= bgHandler;
+                    }
+                };
+            })
+            .Do(x => this.Status = x);
 
 
         public void Register(IServiceCollection services) => services.RegisterCommonServices();
@@ -81,16 +82,21 @@ namespace Shiny
 
         public void Initialize(IShinyStartup startup, IServiceCollection services)
         {
-            startup.ConfigureServices(services);
+            if (hydrated)
+                return;
+
+            startup.ConfigureServices(services, this);
             Dehydrate(STARTUP_KEY, startup);
         }
 
 
+        static bool hydrated;
         public static void BackgroundRun(IBackgroundTaskInstance taskInstance)
         {
-            if (!hydrated)
+            if (!ShinyHost.IsInitialized)
             {
                 var startup = Hydrate<IShinyStartup>(STARTUP_KEY);
+                hydrated = true;
                 ShinyHost.Init(new UwpPlatform(), startup);
             }
             if (taskInstance.Task.Name.StartsWith("JOB-"))
@@ -129,13 +135,6 @@ namespace Shiny
             => GetTask(typeof(TService).AssemblyQualifiedName)?.Unregister(true);
 
 
-        public static void ClearBackgroundTasks() => BackgroundTaskRegistration
-            .AllTasks
-            .Select(x => x.Value)
-            .ToList()
-            .ForEach(x => x.Unregister(false));
-
-
         static void Dehydrate(string key, object? obj)
         {
             if (obj != null)
@@ -160,10 +159,31 @@ namespace Shiny
         }
 
 
-        static IBackgroundTaskRegistration GetTask(string taskName) => BackgroundTaskRegistration
+        public static IBackgroundTaskRegistration GetTask(string taskName) => BackgroundTaskRegistration
             .AllTasks
             .Where(x => x.Value.Name.Equals(taskName))
             .Select(x => x.Value)
             .FirstOrDefault();
+
+
+        public static void RemoveBackgroundTask(string taskName)
+        {
+            // the task name for notifications is the processor, not the job name
+            var taskNames = BackgroundTaskRegistration
+                .AllTasks
+                .Select(x => x.Value.Name)
+                .ToList();
+
+            var task = GetTask(taskName);
+            if (task != null)
+                task.Unregister(true);
+        }
+
+
+        public static void ClearBackgroundTasks() => BackgroundTaskRegistration
+            .AllTasks
+            .Select(x => x.Value)
+            .ToList()
+            .ForEach(x => x.Unregister(false));
     }
 }

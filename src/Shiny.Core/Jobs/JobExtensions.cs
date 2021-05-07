@@ -1,10 +1,11 @@
 ﻿using System;
 using System.Threading.Tasks;
-using Shiny.Infrastructure;
-using Microsoft.Extensions.DependencyInjection;
 using Shiny.Jobs;
 using Shiny.Jobs.Infrastructure;
-using Shiny.Logging;
+using Shiny.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 
 namespace Shiny
@@ -37,10 +38,11 @@ namespace Shiny
         /// This will run any jobs marked with RunOnForeground
         /// </summary>
         /// <param name="services"></param>
-        public static void UseJobForegroundService(this IServiceCollection services, TimeSpan interval)
+        /// <param name="interval"></param>
+        public static void UseJobForegroundService(this IServiceCollection services, TimeSpan? interval = null)
         {
-            JobForegroundService.Interval = interval;
-            services.AddSingleton<JobForegroundService>();
+            JobLifecycleTask.Interval = interval ?? TimeSpan.FromSeconds(30);
+            services.TryAddSingleton<JobLifecycleTask>();
         }
 
 
@@ -53,12 +55,17 @@ namespace Shiny
         {
             services.RegisterPostBuildAction(async sp =>
             {
-                var jobs = sp.GetService<IJobManager>();
+                var jobs = sp.GetRequiredService<IJobManager>();
                 var access = await jobs.RequestAccess();
                 if (access == AccessState.Available)
                     await jobs.Register(jobInfo);
                 else
-                    Log.Write("Jobs", "Job permission failed - " + access);
+                {
+                    ShinyHost
+                        .LoggerFactory
+                        .CreateLogger<ILogger<IJobManager>>()
+                        .LogError("Job permission failed - " + access);
+                }
             });
         }
 

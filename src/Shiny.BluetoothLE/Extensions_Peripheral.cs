@@ -1,21 +1,42 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 
 
 namespace Shiny.BluetoothLE
 {
-    public static class PeripheralExtensions
+    public static partial class Extensions
     {
         /// <summary>
         ///
         /// </summary>
         /// <param name="peripheral"></param>
         /// <param name="serviceUuid"></param>
+        /// <param name="characteristicUuid"></param>
+        /// <param name="data"></param>
+        /// <param name="withResponse"></param>
         /// <returns></returns>
-        public static IObservable<IGattCharacteristic> GetCharacteristicsForService(this IPeripheral peripheral, string serviceUuid)
+        public static IObservable<GattCharacteristicResult> WriteCharacteristic(this IPeripheral peripheral, string serviceUuid, string characteristicUuid, byte[] data, bool withResponse = true)
             => peripheral
-                .GetKnownService(serviceUuid)
-                .Select(x => x.DiscoverCharacteristics()).Switch();
+                .GetKnownCharacteristic(serviceUuid, characteristicUuid, true)
+                .Select(x => x.Write(data, withResponse))
+                .Switch();
+
+        /// <summary>
+        ///
+        /// </summary>
+        /// <param name="peripheral"></param>
+        /// <param name="serviceUuid"></param>
+        /// <param name="characteristicUuid"></param>
+        /// <returns></returns>
+        public static IObservable<byte[]?> ReadCharacteristic(this IPeripheral peripheral, string serviceUuid, string characteristicUuid)
+            => peripheral
+                .GetKnownCharacteristic(serviceUuid, characteristicUuid, true)
+                .Select(x => x.Read())
+                .Switch()
+                .Select(x => x.Data);
 
 
         /// <summary>
@@ -24,16 +45,15 @@ namespace Shiny.BluetoothLE
         /// <param name="peripheral"></param>
         /// <param name="serviceUuid"></param>
         /// <param name="characteristicUuid"></param>
-        /// <param name="sendHook"></param>
         /// <param name="useIndicationIfAvailable"></param>
         /// <returns></returns>
-        public static IObservable<CharacteristicGattResult> Notify(this IPeripheral peripheral, string serviceUuid, string characteristicUuid, bool sendHook = false, bool useIndicationIfAvailable = false)
+        public static IObservable<GattCharacteristicResult> Notify(this IPeripheral peripheral, string serviceUuid, string characteristicUuid, bool useIndicationIfAvailable = false)
             => peripheral
-                .WhenConnected()
-                .Select(_ => peripheral.WhenKnownCharacteristicsDiscovered(serviceUuid, characteristicUuid))
+                .GetKnownCharacteristic(serviceUuid, characteristicUuid, true)
+                .Select(x => x.EnableNotifications(true, useIndicationIfAvailable).Select(_ => x))
                 .Switch()
-                .Select(x => x.Notify(sendHook, useIndicationIfAvailable))
-                .Merge();
+                .Select(x => x.WhenNotificationReceived())
+                .Switch();
 
 
         /// <summary>
@@ -70,6 +90,41 @@ namespace Shiny.BluetoothLE
 
 
         /// <summary>
+        /// Attempts to connect if not already connected
+        /// </summary>
+        /// <param name="peripheral"></param>
+        /// <param name="config"></param>
+        /// <returns></returns>
+        public static IObservable<IPeripheral> WithConnectIf(this IPeripheral peripheral, ConnectionConfig? config = null) => Observable.Create<IPeripheral>(ob =>
+        {
+            if (peripheral.IsConnected())
+            {
+                ob.Respond(peripheral);
+                return Disposable.Empty;
+            }
+
+            var sub1 = peripheral
+                .WhenConnected()
+                .Take(1)
+                .Subscribe(_ => ob.Respond(peripheral));
+
+            var sub2 = peripheral
+                .WhenConnectionFailed()
+                .Subscribe(ob.OnError);
+
+            peripheral.Connect(config);
+
+            return Disposable.Create(() =>
+            {
+                sub1.Dispose();
+                sub2.Dispose();
+                if (peripheral.Status != ConnectionState.Connected)
+                    peripheral.CancelConnection();
+            });
+        });
+
+
+        /// <summary>
         /// Continuously reads RSSI from a connected peripheral
         /// WARNING: you really don't want to run this with an Android GATT connection
         /// </summary>
@@ -84,75 +139,24 @@ namespace Shiny.BluetoothLE
 
 
         /// <summary>
-        /// Waits for connection to actually happen
-        /// </summary>
-        /// <param name="peripheral"></param>
-        /// <param name="config"></param>
-        /// <returns></returns>
-        public static IObservable<IPeripheral> ConnectWait(this IPeripheral peripheral, ConnectionConfig? config = null)
-            => Observable.Create<IPeripheral>(ob =>
-            {
-                var sub1 = peripheral
-                    .WhenConnected()
-                    .Take(1)
-                    .Subscribe(_ => ob.Respond(peripheral));
-
-                var sub2 = peripheral
-                    .WhenConnectionFailed()
-                    .Subscribe(ob.OnError);
-
-                peripheral.ConnectIf(config);
-                return () =>
-                {
-                    sub1.Dispose();
-                    sub2.Dispose();
-                    if (peripheral.Status != ConnectionState.Connected)
-                        peripheral.CancelConnection();
-                };
-            });
-
-
-        /// <summary>
-        /// Discover the characteristic and write to it
-        /// </summary>
-        /// <param name="peripheral"></param>
-        /// <param name="serviceUuid"></param>
-        /// <param name="characteristicUuid"></param>
-        /// <param name="withResponse"></param>
-        /// <param name="data"></param>
-        /// <returns></returns>
-        public static IObservable<CharacteristicGattResult> WriteCharacteristic(this IPeripheral peripheral, string serviceUuid, string characteristicUuid, byte[] data, bool withResponse = true)
-            => peripheral
-                .GetKnownCharacteristics(serviceUuid, characteristicUuid)
-                .Select(x => x.Write(data, withResponse))
-                .Switch();
-
-
-        /// <summary>
-        /// Discover the characteristic and read it
-        /// </summary>
-        /// <param name="peripheral"></param>
-        /// <param name="serviceUuid"></param>
-        /// <param name="characteristicUuid"></param>
-        /// <returns></returns>
-        public static IObservable<CharacteristicGattResult> ReadCharacteristic(this IPeripheral peripheral, string serviceUuid, string characteristicUuid)
-            => peripheral
-                .GetKnownCharacteristics(serviceUuid, characteristicUuid)
-                .Select(ch => ch.Read())
-                .Switch();
-
-
-        /// <summary>
         /// Get known characteristic(s) without service instance
         /// </summary>
         /// <param name="peripheral"></param>
         /// <param name="serviceUuid"></param>
-        /// <param name="characteristicIds"></param>
+        /// <param name="characteristicUuid"></param>
+        /// <param name="throwIfNotFound"></param>
         /// <returns></returns>
-        public static IObservable<IGattCharacteristic> GetKnownCharacteristics(this IPeripheral peripheral, string serviceUuid, params string[] characteristicIds) =>
+        public static IObservable<IGattCharacteristic?> GetKnownCharacteristic(this IPeripheral peripheral, string serviceUuid, string characteristicUuid, bool throwIfNotFound = false) =>
             peripheral
-                .GetKnownService(serviceUuid)
-                .SelectMany(x => x.GetKnownCharacteristics(characteristicIds));
+                .GetKnownService(serviceUuid, throwIfNotFound)
+                .Select(x =>
+                {
+                    if (x == null)
+                        return Observable.Empty<IGattCharacteristic>();
+
+                    return x.GetKnownCharacteristic(characteristicUuid, throwIfNotFound);
+                })
+                .Switch();
 
 
         /// <summary>
@@ -180,41 +184,15 @@ namespace Shiny.BluetoothLE
 
 
         /// <summary>
-        /// Will call GetKnownCharacteristics when connected state occurs
-        /// </summary>
-        /// <param name="peripheral"></param>
-        /// <param name="serviceUuid"></param>
-        /// <param name="characteristicIds"></param>
-        /// <returns></returns>
-        public static IObservable<IGattCharacteristic> WhenKnownCharacteristicsDiscovered(this IPeripheral peripheral, string serviceUuid, params string[] characteristicIds) =>
-            peripheral
-                .WhenConnected()
-                .SelectMany(x => x.GetKnownCharacteristics(serviceUuid, characteristicIds));
-
-
-        /// <summary>
-        /// Get a known service when the peripheral is connected
-        /// </summary>
-        /// <param name="peripheral"></param>
-        /// <param name="serviceUuid"></param>
-        /// <returns></returns>
-        public static IObservable<IGattService> WhenConnectedGetKnownService(this IPeripheral peripheral, string serviceUuid) =>
-            peripheral
-                .WhenConnected()
-                .Select(x => x.GetKnownService(serviceUuid))
-                .Switch();
-
-        /// <summary>
         /// Will discover all services/characteristics when connected state occurs
         /// </summary>
         /// <param name="peripheral"></param>
         /// <returns></returns>
-        public static IObservable<IGattCharacteristic> WhenAnyCharacteristicDiscovered(this IPeripheral peripheral) =>
+        public static IObservable<IList<IGattCharacteristic>> GetAllCharacteristics(this IPeripheral peripheral) =>
             peripheral
-                .WhenConnected()
-                .Select(x => peripheral.DiscoverServices())
-                .Switch()
-                .SelectMany(x => x.DiscoverCharacteristics());
+                .GetServices()
+                .SelectMany(x => x.Select(y => y.GetCharacteristics()))
+                .Merge();
 
 
         /// <summary>
@@ -222,7 +200,10 @@ namespace Shiny.BluetoothLE
         /// </summary>
         /// <param name="peripheral"></param>
         /// <returns></returns>
-        public static IObservable<IGattDescriptor> WhenAnyDescriptorDiscovered(this IPeripheral peripheral)
-            => peripheral.WhenAnyCharacteristicDiscovered().SelectMany(x => x.DiscoverDescriptors());
+        public static IObservable<IList<IGattDescriptor>> GetAllDescriptors(this IPeripheral peripheral) =>
+            peripheral
+                .GetAllCharacteristics()
+                .SelectMany(x => x.Select(y => y.GetDescriptors()))
+                .Switch();
     }
 }

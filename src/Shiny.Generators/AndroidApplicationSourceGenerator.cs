@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.CodeAnalysis;
+//using Microsoft.CodeAnalysis.CSharp;
+//using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
 
 
 namespace Shiny.Generators
@@ -21,10 +23,7 @@ namespace Shiny.Generators
             if (osAppTypeSymbols.Any())
                 return;
 
-            // TODO: this is supposed to run when there are NO android apps - should we try to change it or error right here?
-            // TODO: what if not partial?  why did user mark the assembly then?
-
-            var nameSpace = this.Context.Compilation.AssemblyName;
+            var nameSpace = this.Context.GetRootNamespace();
             var builder = new IndentedStringBuilder();
             builder.AppendNamespaces("Android.App", "Android.Content", "Android.Runtime");
 
@@ -39,9 +38,9 @@ namespace Shiny.Generators
                     this.AppendOnCreate(builder);
                 }
             }
-            this.Context.Source(builder.ToString(), ApplicationName);
+            var source = builder.ToString();
+            this.Context.AddSource(ApplicationName, source);
         }
-
 
 
         void AppendOnCreate(IndentedStringBuilder builder)

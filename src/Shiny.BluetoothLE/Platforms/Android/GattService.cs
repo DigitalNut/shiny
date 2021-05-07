@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using Shiny.BluetoothLE.Internals;
@@ -16,52 +17,47 @@ namespace Shiny.BluetoothLE
         readonly BluetoothGattService native;
 
 
-        public GattService(IPeripheral peripheral,
-                           PeripheralContext context,
-                           BluetoothGattService native) : base(peripheral,
-                                                               native.Uuid.ToString(),
-                                                               native.Type == GattServiceType.Primary)
+        public GattService(
+            IPeripheral peripheral,
+            PeripheralContext context,
+            BluetoothGattService native
+        ): base(
+            peripheral,
+            native.Uuid.ToString(),
+            native.Type == GattServiceType.Primary
+        )
         {
             this.context = context;
             this.native = native;
         }
 
 
-        public override IObservable<IGattCharacteristic> DiscoverCharacteristics() => Observable.Create<IGattCharacteristic>(ob =>
-        {
-            foreach (var characteristic in this.native.Characteristics)
+        public override IObservable<IList<IGattCharacteristic>> GetCharacteristics() => Observable.Return(
+            this.native
+                .Characteristics
+                .Select(native => new GattCharacteristic(this, this.context, native))
+                .Cast<IGattCharacteristic>()
+                .ToList()
+        );
+
+
+        public override IObservable<IGattCharacteristic?> GetKnownCharacteristic(string characteristicUuid, bool throwIfNotFound = false)
+            => Observable.Create<IGattCharacteristic?>(ob =>
             {
-                var wrap = new GattCharacteristic(this, this.context, characteristic);
-                ob.OnNext(wrap);
-            }
-            ob.OnCompleted();
-            return Disposable.Empty;
-        });
-
-
-        public override IObservable<IGattCharacteristic> GetKnownCharacteristics(params string[] characteristicIds)
-            => Observable.Create<IGattCharacteristic>(ob =>
-            {
-                var cids = characteristicIds.Select(UUID.FromString).ToArray();
-                var found = false;
-
-                foreach (var cid in cids)
+                var uuid = UUID.FromString(characteristicUuid);
+                var cs = this.native.GetCharacteristic(uuid);
+                if (cs == null)
                 {
-                    var cs = this.native.GetCharacteristic(cid);
-                    if (cs != null)
-                    {
-                        found = true;
-                        var characteristic = new GattCharacteristic(this, this.context, cs);
-                        ob.OnNext(characteristic);
-                    }
+                    ob.Respond(null);
                 }
-                if (!found)
-                    throw new ArgumentException("No characteristics found for UUID list");
-
-                ob.OnCompleted();
-
+                else
+                {
+                    var characteristic = new GattCharacteristic(this, this.context, cs);
+                    ob.Respond(characteristic);
+                }
                 return Disposable.Empty;
-            });
+            })
+            .Assert(this.Uuid, characteristicUuid, throwIfNotFound);
 
 
         public override bool Equals(object obj)

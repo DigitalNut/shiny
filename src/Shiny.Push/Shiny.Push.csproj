@@ -3,7 +3,7 @@
     <PropertyGroup>
         <Description>Shiny addon for all your push notification needs</Description>
         <TargetFrameworks>netstandard2.0;xamarin.ios10;monoandroid10.0</TargetFrameworks>
-        <TargetFrameworks Condition=" $(OS) == 'WINDOWS_NT' ">uap10.0.16299;$(TargetFrameworks)</TargetFrameworks>
+        <TargetFrameworks Condition=" $(OS) == 'WINDOWS_NT' ">$(UwpTargetFramework);$(TargetFrameworks)</TargetFrameworks>
     </PropertyGroup>
 
     <ItemGroup>
@@ -61,7 +61,17 @@
         <PackageReference Include="Xamarin.GooglePlayServices.Tasks" />
         <PackageReference Include="Xamarin.Google.Android.DataTransport.TransportBackendCct" />
         <PackageReference Include="Xamarin.Google.Android.DataTransport.TransportRuntime" />
+        <PackageReference Include="Xamarin.Google.Dagger" />
         <Compile Include="Platforms\Shared\**\*.cs" />
         <Compile Include="Platforms\Android\**\*.cs" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <Compile Update="PushNotification.cs">
+        <SubType></SubType>
+      </Compile>
+      <Compile Update="PushNotificationResponse.cs">
+        <SubType></SubType>
+      </Compile>
     </ItemGroup>
 </Project>

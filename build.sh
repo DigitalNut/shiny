@@ -1,3 +1,1 @@
-#!/bin/bash
-dotnet tool install --global wyam.tool
-wyam build --preview --watch
+dotnet run --project ./build/ShinyBuild.csproj -- "$@"

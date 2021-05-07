@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reactive.Disposables;
 using System.Reactive.Linq;
 using CoreBluetooth;
 
@@ -13,16 +14,28 @@ namespace Shiny.BluetoothLE
         public CBPeripheral Peripherial { get; }
 
 
-        public GattService(Peripheral peripheral, CBService native) : base(peripheral, native.UUID.ToString(), native.Primary)
+        public GattService(Peripheral peripheral, CBService native)
+            : base(peripheral, native.UUID.ToString(), native.Primary)
         {
             this.Peripherial = peripheral.Native;
             this.Service = native;
         }
 
 
-        public override IObservable<IGattCharacteristic> GetKnownCharacteristics(params string[] characteristicIds)
-            => Observable.Create<IGattCharacteristic>(ob =>
+        public override IObservable<IGattCharacteristic?> GetKnownCharacteristic(string characteristicUuid, bool throwIfNotFound = false)
+            => Observable.Create<IGattCharacteristic?>(ob =>
             {
+                var characteristic = this.Service
+                    .Characteristics?
+                    .Select(ch => new GattCharacteristic(this, ch))
+                    .FirstOrDefault(ch => ch.Uuid.Equals(characteristicUuid, StringComparison.InvariantCultureIgnoreCase));
+
+                if (characteristic != null)
+                {
+                    ob.Respond(characteristic);
+                    return Disposable.Empty;
+                }
+
                 var characteristics = new Dictionary<string, IGattCharacteristic>();
                 var handler = new EventHandler<CBServiceEventArgs>((sender, args) =>
                 {
@@ -32,28 +45,24 @@ namespace Shiny.BluetoothLE
                     if (!this.Equals(args.Service))
                         return;
 
-                    foreach (var nch in this.Service.Characteristics)
-                    {
-                        var ch = new GattCharacteristic(this, nch);
-                        if (!characteristics.ContainsKey(ch.Uuid))
-                        {
-                            characteristics.Add(ch.Uuid, ch);
-                            ob.OnNext(ch);
-                        }
-                    }
-                    if (characteristics.Count == characteristicIds.Length)
-                        ob.OnCompleted();
+                    var characteristic = this.Service
+                        .Characteristics?
+                        .Select(ch => new GattCharacteristic(this, ch))
+                        .FirstOrDefault(ch => ch.Uuid.Equals(characteristicUuid, StringComparison.InvariantCultureIgnoreCase));
+
+                     ob.Respond(characteristic);
                 });
-                var uuids = characteristicIds.Select(CBUUID.FromString).ToArray();
+                var nativeUuid = CBUUID.FromString(characteristicUuid);
                 this.Peripherial.DiscoveredCharacteristic += handler;
-                this.Peripherial.DiscoverCharacteristics(uuids, this.Service);
+                this.Peripherial.DiscoverCharacteristics(new [] { nativeUuid }, this.Service);
 
-                return () => this.Peripherial.DiscoveredCharacteristic -= handler;
-            });
+                return Disposable.Create(() => this.Peripherial.DiscoveredCharacteristic -= handler);
+            })
+            .Assert(this.Uuid, characteristicUuid, throwIfNotFound);
 
 
-        public override IObservable<IGattCharacteristic> DiscoverCharacteristics()
-            => Observable.Create<IGattCharacteristic>(ob =>
+        public override IObservable<IList<IGattCharacteristic>> GetCharacteristics()
+            => Observable.Create<IList<IGattCharacteristic>>(ob =>
             {
                 var characteristics = new Dictionary<string, IGattCharacteristic>();
                 var handler = new EventHandler<CBServiceEventArgs>((sender, args) =>
@@ -64,16 +73,14 @@ namespace Shiny.BluetoothLE
                     if (!this.Equals(args.Service))
                         return;
 
-                    foreach (var nch in this.Service.Characteristics)
-                    {
-                        var ch = new GattCharacteristic(this, nch);
-                        if (!characteristics.ContainsKey(ch.Uuid))
-                        {
-                            characteristics.Add(ch.Uuid, ch);
-                            ob.OnNext(ch);
-                        }
-                    }
-                    ob.OnCompleted();
+                    var list = this.Service
+                        .Characteristics
+                        .Select(ch => new GattCharacteristic(this, ch))
+                        .Distinct()
+                        .Cast<IGattCharacteristic>()
+                        .ToList();
+
+                    ob.Respond(list);
                 });
                 this.Peripherial.DiscoveredCharacteristic += handler;
                 this.Peripherial.DiscoverCharacteristics(this.Service);

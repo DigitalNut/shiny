@@ -1,7 +1,7 @@
 ﻿using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Windows.ApplicationModel.Background;
 using Shiny.Infrastructure;
 
@@ -10,7 +10,7 @@ namespace Shiny.Jobs
 {
     public class JobManager : AbstractJobManager, IBackgroundTaskProcessor
     {
-        public JobManager(IServiceProvider container, IRepository repository) : base(container, repository) {}
+        public JobManager(IServiceProvider container, IRepository repository, ILogger<IJobManager> logger) : base(container, repository, logger) {}
 
 
         public override async Task<AccessState> RequestAccess()
@@ -49,12 +49,12 @@ namespace Shiny.Jobs
         }
 
 
-        protected override void ScheduleNative(JobInfo jobInfo)
+        protected override void RegisterNative(JobInfo jobInfo)
         {
             this.CancelNative(jobInfo);
 
             var builder = new BackgroundTaskBuilder();
-            builder.Name = GetJobTaskName(jobInfo);
+            builder.Name = ToJobTaskName(jobInfo);
             builder.TaskEntryPoint = UwpPlatform.BackgroundTaskName;
 
             if (jobInfo.PeriodicTime != null)
@@ -66,8 +66,6 @@ namespace Shiny.Jobs
                 builder.SetTrigger(new TimeTrigger(runMins, false));
             }
 
-            //SystemTriggerType.PowerStateChange
-            // TODO: idle, power change, etc
             if (jobInfo.RequiredInternetAccess != InternetAccess.None)
             {
                 var type = jobInfo.RequiredInternetAccess == InternetAccess.Any
@@ -76,25 +74,17 @@ namespace Shiny.Jobs
 
                 builder.AddCondition(new SystemCondition(type));
             }
+
+            // TODO: this periodically crashes
             builder.Register();
         }
 
 
-        protected override void CancelNative(JobInfo jobInfo) => GetTask("JOB-" + jobInfo.Identifier)?.Unregister(true);
+        protected override void CancelNative(JobInfo jobInfo)
+            => UwpPlatform.RemoveBackgroundTask(ToJobTaskName(jobInfo));
 
-        static string GetJobTaskName(JobInfo job) => "JOB-" + job.Identifier;
 
-        static IBackgroundTaskRegistration GetTask(string taskName)
-        {
-            var tasks = BackgroundTaskRegistration
-                .AllTasks
-                .ToList();
-
-            return tasks
-                .Where(x => x.Value.Name.Equals(taskName))
-                .Select(x => x.Value)
-                .FirstOrDefault();
-        }
+        static string ToJobTaskName(JobInfo jobInfo) => $"JOB-{jobInfo.Identifier}";
     }
 }
 

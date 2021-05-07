@@ -2,9 +2,9 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Shiny.Infrastructure;
 using Shiny.Jobs;
-using Shiny.Logging;
 using Shiny.Net.Http.Infrastructure;
 
 
@@ -12,7 +12,14 @@ namespace Shiny.Net.Http
 {
     public class HttpClientHttpTransferManager : AbstractHttpTransferManager, IShinyStartupTask
     {
-        public HttpClientHttpTransferManager(ShinyCoreServices services) => this.Services = services;
+        readonly ILogger logger;
+
+
+        public HttpClientHttpTransferManager(ShinyCoreServices services, ILogger logger)
+        {
+            this.Services = services;
+            this.logger = logger;
+        }
 
 
         protected ShinyCoreServices Services { get; }
@@ -38,7 +45,6 @@ namespace Shiny.Net.Http
             if (filter.Ids.Any())
                 query = query.Where(x => filter.Ids.Any(y => x.Id == y));
 
-            // TODO: get attributes (filesize, bytes xfer, etc)
             return query.Select(x => new HttpTransfer(
                 x.Id,
                 x.Uri,
@@ -53,7 +59,6 @@ namespace Shiny.Net.Http
         }
 
 
-        // TODO: what if in the middle of job?
         public override Task Cancel(string id) => Task.WhenAll(
             this.Services.Jobs.Cancel(id),
             this.Services.Repository.Remove<HttpTransferStore>(id)
@@ -108,18 +113,18 @@ namespace Shiny.Net.Http
         public override IObservable<HttpTransfer> WhenUpdated()
             => this.Services.Bus.Listener<HttpTransfer>();
 
+
         public async void Start()
         {
             try
             {
-                // TODO: jobs could be starting this
                 var requests = await this.Services.Repository.GetAll<HttpTransferStore>();
                 foreach (var request in requests)
-                    this.Services.Jobs.Run(request.Id);
+                    await this.Services.Jobs.Run(request.Id);
             }
             catch (Exception ex)
             {
-                Log.Write(ex);
+                this.logger.LogError(ex, "Error restarting HTTP transfer manager");
             }
         }
     }

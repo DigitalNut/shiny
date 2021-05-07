@@ -4,9 +4,9 @@ using System.Linq;
 using System.Reactive.Subjects;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.Logging;
 using Shiny.Infrastructure;
 using Shiny.Jobs.Infrastructure;
-using Shiny.Logging;
 
 
 namespace Shiny.Jobs
@@ -19,17 +19,19 @@ namespace Shiny.Jobs
         readonly Subject<JobInfo> jobStarted;
 
 
-        protected AbstractJobManager(IServiceProvider container, IRepository repository)
+        protected AbstractJobManager(IServiceProvider container, IRepository repository, ILogger<IJobManager> logger)
         {
             this.container = container;
             this.repository = repository;
+            this.Log = logger;
             this.jobStarted = new Subject<JobInfo>();
             this.jobFinished = new Subject<JobRunResult>();
         }
 
 
+        protected ILogger<IJobManager> Log { get; }
         public abstract Task<AccessState> RequestAccess();
-        protected abstract void ScheduleNative(JobInfo jobInfo);
+        protected abstract void RegisterNative(JobInfo jobInfo);
         protected abstract void CancelNative(JobInfo jobInfo);
 
 
@@ -63,7 +65,7 @@ namespace Shiny.Jobs
             }
             catch (Exception ex)
             {
-                Log.Write(ex);
+                this.Log.LogError(ex, "Error running job " + jobName);
                 result = new JobRunResult(actual, ex);
             }
 
@@ -122,7 +124,7 @@ namespace Shiny.Jobs
         public async Task Register(JobInfo jobInfo)
         {
             this.ResolveJob(jobInfo);
-            this.ScheduleNative(jobInfo);
+            this.RegisterNative(jobInfo);
             await this.repository.Set(jobInfo.Identifier, PersistJobInfo.ToPersist(jobInfo));
         }
 
@@ -166,7 +168,7 @@ namespace Shiny.Jobs
                 }
                 catch (Exception ex)
                 {
-                    Log.Write(ex);
+                    this.Log.LogError(ex, "Error running job batch");
                 }
                 finally
                 {
@@ -227,18 +229,18 @@ namespace Shiny.Jobs
                                       Exception? exception = null)
         {
             if (exception == null)
-                Log.Write("Jobs", state == JobState.Finish ? "Job Success" : $"Job {state}", ("JobName", job.Identifier));
+                this.Log.LogInformation(state == JobState.Finish ? "Job Success" : $"Job {state}", ("JobName", job.Identifier));
             else
-                Log.Write(exception, ("JobName", job.Identifier));
+                this.Log.LogError(exception, "Error running job " + job.Identifier);
         }
 
 
         protected virtual void LogTask(JobState state, string taskName, Exception? exception = null)
         {
             if (exception == null)
-                Log.Write("Jobs", state == JobState.Finish ? "Task Success" : $"Task {state}", ("TaskName", taskName));
+                this.Log.LogInformation(state == JobState.Finish ? "Task Success" : $"Task {state}", ("TaskName", taskName));
             else
-                Log.Write(exception, ("TaskName", taskName));
+                this.Log.LogError(exception, "Task failed - " + taskName);
         }
     }
 }

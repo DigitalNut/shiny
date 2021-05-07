@@ -2,25 +2,25 @@
 using System.Collections.Concurrent;
 using System.Reactive.Linq;
 using System.Reactive.Subjects;
-using System.Reactive.Threading.Tasks;
-using System.Threading;
 using System.Threading.Tasks;
-using Shiny.Logging;
+using Android.OS;
 using Android.Bluetooth;
 using Exception = System.Exception;
-using Android.OS;
+using System.Threading;
+using System.Reactive.Disposables;
+using System.Reactive.Threading.Tasks;
 
 namespace Shiny.BluetoothLE.Internals
 {
     public class PeripheralContext
     {
         readonly Subject<BleException> connErrorSubject;
-        CancellationTokenSource? cancelSrc;
+        //CancellationTokenSource? cancelSrc;
 
 
-        public PeripheralContext(CentralContext context, BluetoothDevice device)
+        public PeripheralContext(ManagerContext context, BluetoothDevice device)
         {
-            this.CentralContext = context;
+            this.ManagerContext = context;
             this.NativeDevice = device;
             this.Actions = new ConcurrentQueue<Func<Task>>();
             this.connErrorSubject = new Subject<BleException>();
@@ -28,26 +28,26 @@ namespace Shiny.BluetoothLE.Internals
 
 
         public GattCallbacks Callbacks { get; } = new GattCallbacks();
-        public CentralContext CentralContext { get; }
+        public ManagerContext ManagerContext { get; }
         public BluetoothGatt? Gatt { get; private set; }
         public BluetoothDevice NativeDevice { get; }
 
         public ConnectionState Status => this
-            .CentralContext
+            .ManagerContext
             .Manager
             .GetConnectionState(this.NativeDevice, ProfileType.Gatt)
             .ToStatus();
 
 
         public ConcurrentQueue<Func<Task>> Actions { get; }
-        public IObservable<BleException> ConnectionFailed => this.connErrorSubject; // TODO: need the device
+        public IObservable<BleException> ConnectionFailed => this.connErrorSubject;
 
 
         public void Connect(ConnectionConfig? config) => this.InvokeOnMainThread(() =>
         {
             try
             {
-                this.CleanUpQueue();
+                //this.CleanUpQueue();
                 this.CreateGatt(config?.AutoConnect ?? true);
                 if (this.Gatt == null)
                     throw new BleException("GATT connection could not be established");
@@ -58,40 +58,37 @@ namespace Shiny.BluetoothLE.Internals
             }
             catch (Exception ex)
             {
-                Log.Write(BleLogCategory.Peripheral, "Connection to peripheral failed - " + ex);
                 this.connErrorSubject.OnNext(new BleException("Failed to connect to peripheral", ex));
             }
         });
 
 
+        readonly SemaphoreSlim semaphore = new SemaphoreSlim(1, 1);
+
         public IObservable<T> Invoke<T>(IObservable<T> observable)
         {
-            if (!this.CentralContext.Configuration.AndroidUseInternalSyncQueue)
+            if (!this.ManagerContext.Configuration.AndroidUseInternalSyncQueue)
                 return observable;
 
-            return Observable.Create<T>(ob =>
+            return Observable.Create<T>(async ob =>
             {
-                var cancel = false;
-                this.Actions.Enqueue(async () =>
+                await this.semaphore.WaitAsync();
+                try
                 {
-                    if (cancel)
-                        return;
+                    var result = await observable.ToTask();
+                    ob.OnNext(result);
+                }
+                catch (Exception ex)
+                {
+                    ob.OnError(ex);
+                }
+                finally
+                {
+                    // TODO: release on disconnect as well!?  likely
+                    this.semaphore.Release();
+                }
 
-                    try
-                    {
-                        var result = await observable
-                            .ToTask(this.cancelSrc.Token)
-                            .ConfigureAwait(false);
-                        ob.Respond(result);
-                    }
-                    catch (Exception ex)
-                    {
-                        ob.OnError(ex);
-                    }
-                });
-                this.ProcessQueue(); // fire and forget
-
-                return () => cancel = true;
+                return Disposable.Empty;
             });
         }
 
@@ -122,7 +119,7 @@ namespace Shiny.BluetoothLE.Internals
         readonly Handler handler = new Handler(Looper.MainLooper);
         public void InvokeOnMainThread(Action action)
         {
-            if (this.CentralContext.Configuration.AndroidShouldInvokeOnMainThread)
+            if (this.ManagerContext.Configuration.AndroidShouldInvokeOnMainThread)
                 handler.Post(action);
             else
                 action();
@@ -133,56 +130,54 @@ namespace Shiny.BluetoothLE.Internals
         {
             try
             {
-                this.CleanUpQueue();
+                //this.CleanUpQueue();
                 this.Gatt?.Close();
                 this.Gatt = null;
             }
             catch (Exception ex)
             {
-                Log.Write(BleLogCategory.Peripheral, "Unclean disconnect - " + ex);
+                //Log.Write(BleLogCategory.Peripheral, "Unclean disconnect - " + ex);
             }
         }
 
 
-        bool running;
-        async void ProcessQueue()
-        {
-            if (this.running)
-                return;
+        //bool running;
+        //async void ProcessQueue()
+        //{
+        //    if (this.running)
+        //        return;
 
-            try
-            {
-                this.running = true;
-                Func<Task>? outTask = null;
-                while (this.Actions.TryDequeue(out outTask) && this.running)
-                {
-                    await outTask();
-                }
-            }
-            catch (TaskCanceledException)
-            {
-            }
-            this.running = false;
-        }
-
-
-        void CleanUpQueue()
-        {
-            this.running = false;
-            this.cancelSrc?.Cancel();
-            this.cancelSrc = new CancellationTokenSource();
-            this.Actions.Clear();
-        }
+        //    try
+        //    {
+        //        this.running = true;
+        //        Func<Task>? outTask = null;
+        //        while (this.Actions.TryDequeue(out outTask) && this.running)
+        //        {
+        //            await outTask();
+        //        }
+        //    }
+        //    catch (TaskCanceledException)
+        //    {
+        //    }
+        //    this.running = false;
+        //}
 
 
-        void CreateGatt(bool autoConnect)
-        {
-            var c = this.CentralContext.Android;
-            this.Gatt = c.IsMinApiLevel(23)
-                //? this.NativeDevice.ConnectGatt(c.AppContext, autoConnect, this.Callbacks, BluetoothTransports.Le)
-                ? this.NativeDevice.ConnectGatt(c.AppContext, autoConnect, this.Callbacks, BluetoothTransports.Auto)
-                : this.NativeDevice.ConnectGatt(c.AppContext, autoConnect, this.Callbacks);
-        }
+        //void CleanUpQueue()
+        //{
+        //    this.running = false;
+        //    this.cancelSrc?.Cancel();
+        //    this.cancelSrc = new CancellationTokenSource();
+        //    this.Actions.Clear();
+        //}
+
+
+        void CreateGatt(bool autoConnect) => this.Gatt = this.NativeDevice.ConnectGatt(
+            this.ManagerContext.Android.AppContext,
+            autoConnect,
+            this.Callbacks,
+            BluetoothTransports.Le
+        );
 
         //void CreateGatt(bool autoConnect)
             //try
